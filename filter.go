@@ -147,7 +147,10 @@ var blockedCompositeFingerprints = map[string]bool{
 	// Default curl (TLS 1.2/1.3 with specific ciphers, often HTTP/1.1)
 	"TLSv1.2|ECDHE-RSA-AES128-GCM-SHA256|HTTP/1.1": true,
 	"TLSv1.3|TLS_AES_128_GCM_SHA256|HTTP/1.1":      true,
-	"TLSv1.3|AEAD-AES256-GCM-SHA384|HTTP/1.1":      true, // Observed in your logs
+
+	// ⚠️ COMMENTED OUT: Modern Chrome/Edge legitimately uses this.
+	// Leaving it active risks blocking real human victims.
+	// "TLSv1.3|AEAD-AES256-GCM-SHA384|HTTP/1.1": true,
 
 	// Default Python requests / urllib3
 	"TLSv1.2|ECDHE-RSA-AES256-GCM-SHA384|HTTP/1.1": true,
@@ -177,7 +180,9 @@ type rateLimiter struct {
 }
 
 const (
-	maxRequestsPerIP = 1000        // requests allowed per window per IP
+	// Dropped from 1000 to 150. A real human makes ~10-20 req/min.
+	// 150 allows for asset loading but starves brute-force attackers.
+	maxRequestsPerIP = 150
 	rateWindow       = time.Minute // window length
 )
 
@@ -274,6 +279,9 @@ func isBlocked(r *http.Request) (bool, string) {
 	ua := strings.ToLower(r.UserAgent())
 	fingerprint := r.Header.Get("X-CF-Fingerprint")
 
+	// ── NEW: Extract JA4 Hash for Enterprise/Pro blocking ──
+	ja4Hash := r.Header.Get("X-JA4-Hash")
+
 	// ── 0. DYNAMIC SWARM BLOCK (Path B) ──
 	// Check this FIRST. If the correlator has auto-banned this prefix/fingerprint,
 	// drop it instantly with zero further processing.
@@ -309,17 +317,23 @@ func isBlocked(r *http.Request) (bool, string) {
 		}
 	}
 
-	// ── 4. Composite Fingerprint Blocklist ──
+	// ── 4. JA4 Fingerprint Blocklist (Enterprise/Pro) ──
+	// THIS WAS MISSING! We now check the cryptographically derived JA4 hash.
+	if ja4Hash != "" && isBlockedJA4(ja4Hash) {
+		return true, fmt.Sprintf("blocked JA4 hash: %s", ja4Hash)
+	}
+
+	// ── 5. Composite Fingerprint Blocklist (Free/Pro Fallback) ──
 	if fingerprint != "" && isBlockedComposite(fingerprint) {
 		return true, fmt.Sprintf("blocked composite fingerprint: %s", fingerprint)
 	}
 
-	// ── 5. Hosting/Datacenter ASN Gate ──
+	// ── 6. Hosting/Datacenter ASN Gate ──
 	if blockHostingProviders && isHostingIP(ip) {
 		return true, fmt.Sprintf("hosting/datacenter ASN blocked: %s", ip)
 	}
 
-	// ── 6. Rate Limiting ──
+	// ── 7. Rate Limiting ──
 	if !limiter.allow(ip) {
 		return true, fmt.Sprintf("rate limit exceeded: %s (%d req/min)", ip, limiter.count(ip))
 	}

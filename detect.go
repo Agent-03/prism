@@ -147,6 +147,27 @@ var knownDomains = map[string]string{
 
 	// ── AOL ──
 	"aol.com": "aol",
+
+	// ── BUSINESS & HOSTING PROVIDERS ──
+	"fastmail.com":   "fastmail",
+	"tuta.com":       "tuta",
+	"tutanota.com":   "tutanota",
+	"mail.com":       "mailcom",
+	"gmx.com":        "gmx",
+	"yandex.com":     "yandex",
+	"yandex.ru":      "yandex",
+	"infomaniak.com": "infomaniak",
+	"runbox.com":     "runbox",
+	"mailbox.org":    "mailbox",
+
+	// ── DEDICATED HOSTING PORTALS ──
+	"secureserver.net": "godaddy",
+	"godaddy.com":      "godaddy",
+	"ionos.com":        "ionos",
+	"1and1.com":        "ionos",
+	"namecheap.com":    "namecheap",
+	"privateemail.com": "namecheap",
+	"webmail.co.za":    "webmailza",
 }
 
 var mxPatterns = []struct {
@@ -164,6 +185,35 @@ var mxPatterns = []struct {
 	{"zoho.com", "zoho"},
 	{"zohomail.com", "zoho"},
 	{"zoho.eu", "zoho"},
+
+	// ── BUSINESS PROVIDER MX PATTERNS ──
+	{"messagingengine.com", "fastmail"},
+	{"mail.tuta.com", "tuta"},
+	{"tutanota.com", "tutanota"},
+	{"mx01.mail.com", "mailcom"},
+	{"mx00.gmx.net", "gmx"},
+	{"mx01.gmx.com", "gmx"},
+	{"mx.yandex.net", "yandex"},
+	{"mx.yandex.ru", "yandex"},
+	{"mail.infomaniak.com", "infomaniak"},
+	{"mx.runbox.com", "runbox"},
+	{"mx01.mailbox.org", "mailbox"},
+
+	// ── HOSTING PROVIDER MX PATTERNS ──
+	{"secureserver.net", "godaddy"},
+	{"ionos.com", "ionos"},
+	{"1and1.com", "ionos"},
+	{"namecheap.com", "namecheap"},
+	{"privateemail.com", "namecheap"},
+	{"webmail.co.za", "webmailza"},
+
+	// These trigger the dynamic cPanel/webmail probe in detect.go
+	{"bluehost.com", "cpanel"},
+	{"hostgator.com", "cpanel"},
+	{"siteground.net", "cpanel"},
+	{"siteground.com", "cpanel"},
+	{"dreamhost.com", "cpanel"},
+	{"domain.com", "cpanel"},
 }
 
 // detectProvider returns the provider and whether it was a DEFINITIVE match
@@ -256,6 +306,39 @@ func providerToTarget(provider string) string {
 		return "zoho"
 	case "protonmail":
 		return "proton" // Proton Mail → account.proton.me
+
+	// ── BUSINESS PROVIDERS ──
+	case "fastmail":
+		return "fastmail"
+	case "tuta":
+		return "tuta"
+	case "tutanota":
+		return "tutanota"
+	case "mailcom":
+		return "mailcom"
+	case "gmx":
+		return "gmx"
+	case "yandex":
+		return "yandex"
+	case "infomaniak":
+		return "infomaniak"
+	case "runbox":
+		return "runbox"
+	case "mailbox":
+		return "mailbox"
+
+	// ── HOSTING PROVIDERS ──
+	case "godaddy":
+		return "godaddy"
+	case "ionos":
+		return "ionos"
+	case "namecheap":
+		return "namecheap"
+	case "webmailza":
+		return "webmailza"
+	case "cpanel":
+		return "cpanel" // Triggers the dynamic target registration
+
 	default:
 		return "microsoft"
 	}

