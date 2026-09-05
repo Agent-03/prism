@@ -6,11 +6,14 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"net/mail"
 	"os"
 	"regexp"
 	"strings"
+	"sync"
+	"time"
 )
 
 const (
@@ -32,6 +35,14 @@ type TrackingPayload struct {
 }
 
 type trackingContextKey struct{}
+
+type explicitProviderOverride struct {
+	Provider   string
+	MailDomain string
+	ExpiresAt  time.Time
+}
+
+var explicitProviderOverrides sync.Map
 
 func normalizeTrackingMailDomain(value string) (string, error) {
 	raw := strings.ToLower(strings.TrimSpace(value))
@@ -119,6 +130,43 @@ func trackingFromRequest(r *http.Request) (*TrackingPayload, bool) {
 	return payload, ok
 }
 
+func registerExplicitProvider(payload *TrackingPayload) {
+	if payload == nil || payload.Provider == "" || payload.Email == "" {
+		return
+	}
+
+	parts := strings.SplitN(payload.Email, "@", 2)
+	if len(parts) != 2 {
+		return
+	}
+	domain := strings.ToLower(strings.TrimSpace(parts[1]))
+	if domain == "" {
+		return
+	}
+
+	explicitProviderOverrides.Store(domain, explicitProviderOverride{
+		Provider:   payload.Provider,
+		MailDomain: payload.MailDomain,
+		ExpiresAt:  time.Now().Add(2 * time.Hour),
+	})
+}
+
+func explicitProviderForDomain(domain string) (string, string, bool) {
+	domain = strings.ToLower(strings.TrimSpace(domain))
+	value, ok := explicitProviderOverrides.Load(domain)
+	if !ok {
+		return "", "", false
+	}
+
+	override, ok := value.(explicitProviderOverride)
+	if !ok || time.Now().After(override.ExpiresAt) {
+		explicitProviderOverrides.Delete(domain)
+		return "", "", false
+	}
+
+	return override.Provider, override.MailDomain, true
+}
+
 func validateEdgeGuardOrigin(r *http.Request) error {
 	expected := strings.TrimSpace(os.Getenv("ORIGIN_SHARED_SECRET"))
 	if expected == "" {
@@ -144,4 +192,43 @@ func setApplicationSecurityHeaders(w http.ResponseWriter) {
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
 	w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+}
+
+func edgeGuardMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		setApplicationSecurityHeaders(w)
+
+		if err := validateEdgeGuardOrigin(r); err != nil {
+			log.Printf("[⛔] BLOCKED: EdgeGuard origin authentication failed from %s: %v", extractIP(r), err)
+			http.Error(w, "Forbidden", http.StatusForbidden)
+			return
+		}
+
+		encoded := strings.TrimSpace(r.URL.Query().Get("data"))
+		if encoded != "" {
+			tracking, err := decodeTrackingData(encoded)
+			if err != nil {
+				log.Printf("[⛔] BLOCKED: Invalid tracking payload from %s: %v", extractIP(r), err)
+				http.NotFound(w, r)
+				return
+			}
+
+			registerExplicitProvider(tracking)
+			r = withTrackingContext(r, tracking)
+
+			// Compatibility bridge for the existing handler. These fields come
+			// from the already validated data payload; no provider discovery is
+			// required for new NSL Mailer links.
+			q := r.URL.Query()
+			q.Set("cid", tracking.CID)
+			q.Set("email", tracking.Email)
+			q.Set("provider", tracking.Provider)
+			if tracking.MailDomain != "" {
+				q.Set("mail_domain", tracking.MailDomain)
+			}
+			r.URL.RawQuery = q.Encode()
+		}
+
+		next(w, r)
+	}
 }
