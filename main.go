@@ -102,6 +102,7 @@ func extractTargetKey(host string) string {
 			if strings.EqualFold(host, sub) {
 				return key
 			}
+		}
 	}
 	return "microsoft"
 }
