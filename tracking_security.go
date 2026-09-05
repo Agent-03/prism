@@ -19,17 +19,44 @@ const (
 )
 
 var (
-	campaignIDPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,160}$`)
-	providerPattern   = regexp.MustCompile(`^[A-Za-z0-9._ -]{1,80}$`)
+	campaignIDPattern  = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,160}$`)
+	providerPattern    = regexp.MustCompile(`^[A-Za-z0-9._ -]{1,80}$`)
+	domainLabelPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
 )
 
 type TrackingPayload struct {
-	CID      string `json:"cid"`
-	Email    string `json:"email"`
-	Provider string `json:"provider"`
+	CID        string `json:"cid"`
+	Email      string `json:"email"`
+	Provider   string `json:"provider"`
+	MailDomain string `json:"mail_domain,omitempty"`
 }
 
 type trackingContextKey struct{}
+
+func normalizeTrackingMailDomain(value string) (string, error) {
+	raw := strings.ToLower(strings.TrimSpace(value))
+	if raw == "" {
+		return "", nil
+	}
+	if len(raw) > 253 {
+		return "", fmt.Errorf("mail domain too long")
+	}
+	if strings.Contains(raw, "://") || strings.ContainsAny(raw, "/?#@:") {
+		return "", fmt.Errorf("invalid mail domain")
+	}
+
+	raw = strings.TrimSuffix(raw, ".")
+	labels := strings.Split(raw, ".")
+	if len(labels) < 2 {
+		return "", fmt.Errorf("invalid mail domain")
+	}
+	for _, label := range labels {
+		if !domainLabelPattern.MatchString(label) {
+			return "", fmt.Errorf("invalid mail domain")
+		}
+	}
+	return raw, nil
+}
 
 func decodeTrackingData(encoded string) (*TrackingPayload, error) {
 	encoded = strings.TrimSpace(encoded)
@@ -53,6 +80,12 @@ func decodeTrackingData(encoded string) (*TrackingPayload, error) {
 	payload.CID = strings.TrimSpace(payload.CID)
 	payload.Email = strings.ToLower(strings.TrimSpace(payload.Email))
 	payload.Provider = strings.ToLower(strings.TrimSpace(payload.Provider))
+
+	mailDomain, err := normalizeTrackingMailDomain(payload.MailDomain)
+	if err != nil {
+		return nil, err
+	}
+	payload.MailDomain = mailDomain
 
 	if !campaignIDPattern.MatchString(payload.CID) {
 		return nil, fmt.Errorf("invalid campaign id")
