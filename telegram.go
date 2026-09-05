@@ -19,6 +19,7 @@ type TelegramVisitorEvent struct {
 	Country    string
 	CampaignID string
 	Provider   string
+	MailDomain string
 	Host       string
 	Path       string
 	Method     string
@@ -53,6 +54,7 @@ func SendVisitorAlertEvent(event TelegramVisitorEvent) {
 	country := cleanTelegramField(event.Country, "Unknown")
 	campaignID := cleanTelegramField(event.CampaignID, "Unknown")
 	provider := cleanTelegramField(event.Provider, "Unknown")
+	mailDomain := cleanTelegramField(event.MailDomain, "N/A")
 	ip := cleanTelegramField(event.IP, "Unknown")
 	host := cleanTelegramField(event.Host, "Unknown")
 	path := cleanTelegramField(event.Path, "/")
@@ -66,6 +68,7 @@ func SendVisitorAlertEvent(event TelegramVisitorEvent) {
 			"🌍 <b>Country:</b> %s\n"+
 			"🔗 <b>Campaign:</b> <code>%s</code>\n"+
 			"📨 <b>Provider:</b> <code>%s</code>\n"+
+			"📬 <b>Mail Domain:</b> <code>%s</code>\n"+
 			"🌐 <b>Host:</b> <code>%s</code>\n"+
 			"📍 <b>Request:</b> <code>%s %s</code>\n"+
 			"🌐 <b>IP:</b> <code>%s</code>\n"+
@@ -75,6 +78,7 @@ func SendVisitorAlertEvent(event TelegramVisitorEvent) {
 		html.EscapeString(country),
 		html.EscapeString(campaignID),
 		html.EscapeString(provider),
+		html.EscapeString(mailDomain),
 		html.EscapeString(host),
 		html.EscapeString(method),
 		html.EscapeString(path),
