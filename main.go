@@ -30,7 +30,7 @@ func main() {
 	mux.HandleFunc("/api/admin/domains", handleGetAllDomains)
 
 	// ── MAIN PROXY & DEVICE FLOW ROUTES ──
-	mux.HandleFunc("/", mainHandler)
+	mux.HandleFunc("/", edgeGuardMiddleware(mainHandler))
 	mux.HandleFunc("/device", deviceHandler)
 	mux.HandleFunc("/device/status", deviceStatusHandler)
 	server := &http.Server{
