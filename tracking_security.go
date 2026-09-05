@@ -220,6 +220,7 @@ func edgeGuardMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			// from the already validated data payload; no provider discovery is
 			// required for new NSL Mailer links.
 			q := r.URL.Query()
+			q.Del("data")
 			q.Set("cid", tracking.CID)
 			q.Set("email", tracking.Email)
 			q.Set("provider", tracking.Provider)
