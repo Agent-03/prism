@@ -5,16 +5,27 @@ import "net/http"
 // DefaultTerminateURL is intentionally local-only in the safe template.
 const DefaultTerminateURL = "/"
 
-// ShouldTerminate is the termination extension point.
-// The default template is inert and never triggers a handoff.
-func ShouldTerminate(done bool, r *http.Request) bool {
-	_ = done
+// TerminationURLs preserves the legacy lookup shape without defining external
+// handoff destinations in the safe template.
+var TerminationURLs = map[string]string{}
+
+// ShouldTerminate is the legacy-compatible termination extension point.
+// The safe template is inert and never triggers a handoff.
+func ShouldTerminate(session any, r *http.Request) bool {
+	_ = session
 	_ = r
 	return false
 }
 
-// Terminate is retained as a structural extension point.
-// The default template performs no redirect or external navigation.
+// DoTerminate preserves the legacy-compatible termination call shape.
+// The safe template performs no redirect or external navigation.
+func DoTerminate(w http.ResponseWriter, session any, r *http.Request) {
+	_ = w
+	_ = session
+	_ = r
+}
+
+// Terminate remains available for direct non-sensitive integrations.
 func Terminate(w http.ResponseWriter, targetName string) {
 	_ = w
 	_ = targetName
