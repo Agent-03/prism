@@ -1,0 +1,18 @@
+# Build outputs
+/bin/
+ms-proxy
+ms-proxy.exe
+prism
+*.exe
+
+# Runtime output
+*.log
+runtime/
+
+# Local/editor files
+.vscode/
+.DS_Store
+
+# Keep production secrets out of new commits
+.env.local
+.env.*.local
