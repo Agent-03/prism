@@ -11,10 +11,11 @@ func (s *Session) MarkDone() {
 	_ = s
 }
 
-func captureAuthTokens(resp *http.Response, s *Session, target *Target) {
+func captureAuthTokens(resp *http.Response, s *Session, target *Target, r *http.Request) {
 	_ = resp
 	_ = s
 	_ = target
+	_ = r
 }
 
 func isSessionComplete(target *Target, password string, reachedService bool, tokens map[string]string, capturedAny bool) bool {
