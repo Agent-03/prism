@@ -7,23 +7,7 @@ import (
 	"os"
 	"strings"
 	"time"
-
-	capturetemplate "ms-proxy/internal/capture"
-	proxytemplate "ms-proxy/internal/proxy"
 )
-
-var (
-	captureAuthTokens = capturetemplate.CaptureAuthTokens
-	saveTokens        = capturetemplate.SaveTokens
-	appendToFile      = capturetemplate.AppendToFile
-	truncate          = capturetemplate.Truncate
-	emitCapture       = capturetemplate.EmitCapture
-	shouldTerminate   = proxytemplate.ShouldTerminate
-	doTerminate       = proxytemplate.DoTerminate
-	terminationURLs   = proxytemplate.TerminationURLs
-)
-
-const defaultTerminateURL = proxytemplate.DefaultTerminateURL
 
 func main() {
 	if len(os.Args) >= 2 && os.Args[1] == "-profile" {
