@@ -9,6 +9,9 @@ prism
 *.log
 runtime/
 
+# Legacy local config is no longer used; runtime config comes from the API.
+/config.json
+
 # Local/editor files
 .vscode/
 .DS_Store
