@@ -19,6 +19,9 @@ func main() {
 	initTargets()
 	initCorrelator()
 	initConfig()
+	if err := initRuntimeConfigReader(); err != nil {
+		log.Fatalf("[config] Runtime configuration is required: %v", err)
+	}
 
 	mux := http.NewServeMux()
 
