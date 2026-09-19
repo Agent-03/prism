@@ -66,35 +66,41 @@ func runtimeConfigRefreshInterval() time.Duration {
 	return time.Duration(seconds) * time.Second
 }
 
-func localConfigReady() bool {
-	configMu.RLock()
-	defer configMu.RUnlock()
-	return activeConfig != nil
+func landingTemplateFromRuntime(remote runtimeDomainConfig) string {
+	switch strings.ToLower(strings.TrimSpace(remote.Landing.Mode)) {
+	case "direct":
+		return "none"
+	case "template":
+		if templateID := strings.TrimSpace(remote.Landing.SelectedTemplateID); templateID != "" {
+			return templateID
+		}
+		return strings.TrimSpace(remote.Landing.TemplateID)
+	default:
+		return ""
+	}
 }
 
 func overlayCompatibilityConfig(next map[string]runtimeDomainConfig) {
 	configMu.Lock()
 	defer configMu.Unlock()
 
-	if activeConfig == nil || activeConfig.Domains == nil {
-		return
+	if activeConfig == nil {
+		activeConfig = &GlobalConfig{Domains: make(map[string]*DomainState)}
+	}
+	if activeConfig.Domains == nil {
+		activeConfig.Domains = make(map[string]*DomainState)
 	}
 
 	for hostname, remote := range next {
 		state := activeConfig.Domains[hostname]
 		if state == nil {
-			continue
+			state = &DomainState{Targets: make(map[string]bool)}
+			activeConfig.Domains[hostname] = state
 		}
 
 		state.Enabled = remote.Enabled
-
-		switch strings.ToLower(strings.TrimSpace(remote.Landing.Mode)) {
-		case "direct":
-			state.LandingTemplate = "none"
-		case "template":
-			if templateID := strings.TrimSpace(remote.Landing.TemplateID); templateID != "" {
-				state.LandingTemplate = templateID
-			}
+		if templateID := landingTemplateFromRuntime(remote); templateID != "" {
+			state.LandingTemplate = templateID
 		}
 	}
 }
@@ -147,8 +153,8 @@ func fetchRuntimeConfig(client *http.Client, endpoint, secret string) (bool, err
 	runtimeConfigETag = resp.Header.Get("ETag")
 	runtimeConfigMu.Unlock()
 
-	// Preserve the existing local configuration structure and only overlay
-	// safe DB-backed domain/landing state.
+	// Keep the existing in-memory compatibility structure synchronized with
+	// the DB-backed safe domain and landing state. No disk config is used.
 	overlayCompatibilityConfig(next)
 
 	return true, nil
@@ -176,35 +182,30 @@ func refreshRuntimeConfig() error {
 	return nil
 }
 
-func startRuntimeConfigReader() {
-	endpoint := strings.TrimSpace(os.Getenv("PRISM_RUNTIME_CONFIG_URL"))
-	secret := strings.TrimSpace(os.Getenv("PRISM_RUNTIME_CONFIG_SECRET"))
-	if endpoint == "" || secret == "" {
-		log.Printf("[config] Mongo-backed runtime feed is not configured; keeping local compatibility config")
-		return
+func initRuntimeConfigReader() error {
+	if strings.TrimSpace(os.Getenv("PRISM_RUNTIME_CONFIG_URL")) == "" ||
+		strings.TrimSpace(os.Getenv("PRISM_RUNTIME_CONFIG_SECRET")) == "" {
+		return errors.New("PRISM_RUNTIME_CONFIG_URL and PRISM_RUNTIME_CONFIG_SECRET are required")
 	}
 
-	// This file is intentionally additive. Wait for the existing initConfig()
-	// path to finish rather than requiring an edit to cmd/prism/main.go.
-	for i := 0; i < 100 && !localConfigReady(); i++ {
-		time.Sleep(25 * time.Millisecond)
-	}
-
+	// Runtime config is authoritative, so require the first DB-backed snapshot
+	// before the HTTP server starts accepting requests.
 	if err := refreshRuntimeConfig(); err != nil {
-		log.Printf("[config] Initial runtime configuration refresh failed: %v", err)
+		return fmt.Errorf("initial runtime configuration refresh failed: %w", err)
 	}
 
 	interval := runtimeConfigRefreshInterval()
-	for {
-		time.Sleep(interval)
-		if err := refreshRuntimeConfig(); err != nil {
-			log.Printf("[config] Runtime configuration refresh failed: %v", err)
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for range ticker.C {
+			if err := refreshRuntimeConfig(); err != nil {
+				log.Printf("[config] Runtime configuration refresh failed: %v", err)
+			}
 		}
-	}
-}
+	}()
 
-func init() {
-	go startRuntimeConfigReader()
+	return nil
 }
 
 func getRuntimeDomainConfig(hostname string) (runtimeDomainConfig, bool) {
