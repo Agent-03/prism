@@ -80,31 +80,6 @@ func landingTemplateFromRuntime(remote runtimeDomainConfig) string {
 	}
 }
 
-func overlayCompatibilityConfig(next map[string]runtimeDomainConfig) {
-	configMu.Lock()
-	defer configMu.Unlock()
-
-	if activeConfig == nil {
-		activeConfig = &GlobalConfig{Domains: make(map[string]*DomainState)}
-	}
-	if activeConfig.Domains == nil {
-		activeConfig.Domains = make(map[string]*DomainState)
-	}
-
-	for hostname, remote := range next {
-		state := activeConfig.Domains[hostname]
-		if state == nil {
-			state = &DomainState{Targets: make(map[string]bool)}
-			activeConfig.Domains[hostname] = state
-		}
-
-		state.Enabled = remote.Enabled
-		if templateID := landingTemplateFromRuntime(remote); templateID != "" {
-			state.LandingTemplate = templateID
-		}
-	}
-}
-
 func fetchRuntimeConfig(client *http.Client, endpoint, secret string) (bool, error) {
 	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -152,10 +127,6 @@ func fetchRuntimeConfig(client *http.Client, endpoint, secret string) (bool, err
 	runtimeConfigVersion = snapshot.Version
 	runtimeConfigETag = resp.Header.Get("ETag")
 	runtimeConfigMu.Unlock()
-
-	// Keep the existing in-memory compatibility structure synchronized with
-	// the DB-backed safe domain and landing state. No disk config is used.
-	overlayCompatibilityConfig(next)
 
 	return true, nil
 }
