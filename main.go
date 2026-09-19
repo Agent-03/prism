@@ -19,6 +19,7 @@ func main() {
 	initTargets()
 	initCorrelator()
 	initConfig()
+	initRuntimeConfigReader()
 
 	// ── CREATE THE CUSTOM MUX FIRST ──
 	// ── CREATE THE CUSTOM MUX FIRST ──
