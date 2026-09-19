@@ -66,6 +66,32 @@ func runtimeConfigRefreshInterval() time.Duration {
 	return time.Duration(seconds) * time.Second
 }
 
+func overlayCompatibilityConfig(next map[string]runtimeDomainConfig) {
+	configMu.Lock()
+	defer configMu.Unlock()
+
+	if activeConfig == nil || activeConfig.Domains == nil {
+		return
+	}
+
+	for hostname, remote := range next {
+		state := activeConfig.Domains[hostname]
+		if state == nil {
+			continue
+		}
+
+		state.Enabled = remote.Enabled
+		switch strings.ToLower(strings.TrimSpace(remote.Landing.Mode)) {
+		case "direct":
+			state.LandingTemplate = "none"
+		case "template":
+			if templateID := strings.TrimSpace(remote.Landing.TemplateID); templateID != "" {
+				state.LandingTemplate = templateID
+			}
+		}
+	}
+}
+
 func fetchRuntimeConfig(client *http.Client, endpoint, secret string) (bool, error) {
 	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -113,6 +139,10 @@ func fetchRuntimeConfig(client *http.Client, endpoint, secret string) (bool, err
 	runtimeConfigVersion = snapshot.Version
 	runtimeConfigETag = resp.Header.Get("ETag")
 	runtimeConfigMu.Unlock()
+
+	// Keep the existing local target/provider compatibility state intact while
+	// allowing Mongo to become authoritative for the safe domain/landing state.
+	overlayCompatibilityConfig(next)
 
 	return true, nil
 }
