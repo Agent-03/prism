@@ -237,6 +237,8 @@ func compactLogLine(line string) (string, bool) {
 			stepLabel = "Password challenge"
 		case "/account/challenge/web-authn":
 			stepLabel = "WebAuthn challenge"
+		case "/account/challenge/challenge-selector":
+			stepLabel = "Selector"
 		}
 
 		if stepLabel != "" {
