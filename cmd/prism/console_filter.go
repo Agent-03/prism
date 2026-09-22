@@ -53,7 +53,7 @@ func filterStdout(reader *os.File, dst io.Writer) {
 		}
 
 		// Session creation is useful operational context, but the original line
-		// contains the full UA/IP and is too noisy. Collapse it to one short line.
+		// contains the full UA/IP and is too noisy. Collapse it to one clean line.
 		if strings.Contains(line, "New session:") {
 			index := fieldBetween(line, "[+] [", "] New session:")
 			rest := fieldAfter(line, "New session:")
@@ -62,12 +62,12 @@ func filterStdout(reader *os.File, dst io.Writer) {
 				id = fields[0]
 			}
 
-			out := "[session] new"
-			if id != "" {
-				out += " id=" + id
-			}
+			out := "🟢 SESSION  •  New visitor"
 			if index != "" {
-				out += " index=" + index
+				out += "  •  #" + index
+			}
+			if id != "" {
+				out += "  •  ID " + id
 			}
 			_, _ = io.WriteString(dst, out+"\n")
 			continue
@@ -98,7 +98,7 @@ func compactLogLine(line string) (string, bool) {
 			if i := strings.Index(line, "["); i > 0 {
 				prefix = strings.TrimSpace(line[:i]) + " "
 			}
-			return prefix + "[page] landed host=" + host + " path=" + path, true
+			return prefix + "🌐 PAGE     •  Landed  •  " + host + path, true
 		}
 		return "", false
 	}
