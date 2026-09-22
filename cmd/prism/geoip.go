@@ -80,8 +80,7 @@ func profileVisitor(r *http.Request, visitorID string) VisitorProfile {
 }
 
 // profileHandler is POST /api/profile. The landing page sends a visitorId; we
-// enrich it with GeoIP/ASN, log it, and return isHosting so the front end can
-// hide the campaign from scanners / security tooling.
+// enrich it with GeoIP/ASN and return isHosting to the front end.
 func profileHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodOptions {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -101,9 +100,6 @@ func profileHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	profile := profileVisitor(r, req.VisitorID)
-	log.Printf("[profile] visitor=%s ip=%s loc=%s/%s asn=%d (%s) hosting=%v",
-		profile.VisitorID, profile.IP, profile.Country, profile.City,
-		profile.ASN, profile.HostingProvider, profile.IsHosting)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
