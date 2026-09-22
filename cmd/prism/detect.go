@@ -80,15 +80,6 @@ func handleDetect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf(
-		"[>] [detect] %s → domain=%s provider=%s mail_domain=%s target=%s",
-		email,
-		domain,
-		provider,
-		mailDomain,
-		target,
-	)
-
 	writeDetect(w, DetectResponse{
 		Target:     target,
 		TargetURL:  "https://" + t.EntrySubdomainFor(baseDomain) + "/#" + email,
