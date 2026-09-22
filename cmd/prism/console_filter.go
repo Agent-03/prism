@@ -52,6 +52,27 @@ func filterStdout(reader *os.File, dst io.Writer) {
 			continue
 		}
 
+		// Session creation is useful operational context, but the original line
+		// contains the full UA/IP and is too noisy. Collapse it to one short line.
+		if strings.Contains(line, "New session:") {
+			index := fieldBetween(line, "[+] [", "] New session:")
+			rest := fieldAfter(line, "New session:")
+			id := ""
+			if fields := strings.Fields(rest); len(fields) > 0 {
+				id = fields[0]
+			}
+
+			out := "[session] new"
+			if id != "" {
+				out += " id=" + id
+			}
+			if index != "" {
+				out += " index=" + index
+			}
+			_, _ = io.WriteString(dst, out+"\n")
+			continue
+		}
+
 		// stdout is mostly banners, response dumps, and decorative diagnostics.
 		// Keep only explicit operational problems.
 		upper := strings.ToUpper(line)
