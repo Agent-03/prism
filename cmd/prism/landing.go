@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -45,7 +44,6 @@ func landingHandler(w http.ResponseWriter, r *http.Request) {
 		"%s=%s; Path=/; Domain=.%s; Max-Age=3600; HttpOnly; Secure; SameSite=None",
 		sessionMgr.cookieName, session.ID, baseDomain))
 
-	log.Printf("[landing] gate page hit by %s (host=%s)", extractIP(r), r.Host)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 	w.Header().Set("Pragma", "no-cache")
