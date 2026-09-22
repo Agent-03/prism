@@ -15,10 +15,6 @@ type consoleLogWriter struct {
 	dst io.Writer
 }
 
-func init() {
-	installCompactConsole()
-}
-
 func installCompactConsole() {
 	originalStdout := os.Stdout
 
