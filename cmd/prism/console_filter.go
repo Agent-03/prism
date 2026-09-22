@@ -17,7 +17,10 @@ type consoleLogWriter struct {
 	dst io.Writer
 }
 
-const visitorLogDedupeWindow = 5 * time.Minute
+const (
+	visitorLogDedupeWindow = 5 * time.Minute
+	blockedLogDedupeWindow = 10 * time.Second
+)
 
 type visitorLogEntry struct {
 	SID      string
@@ -31,10 +34,12 @@ var compactConsoleState = struct {
 	visitors            map[string]visitorLogEntry
 	sidByIndex          map[string]string
 	providerSeen        map[string]time.Time
+	blockedSeen         map[string]time.Time
 }{
 	visitors:     make(map[string]visitorLogEntry),
 	sidByIndex:   make(map[string]string),
 	providerSeen: make(map[string]time.Time),
+	blockedSeen:  make(map[string]time.Time),
 }
 
 func installCompactConsole() {
@@ -107,6 +112,11 @@ func filterStdout(reader *os.File, dst io.Writer) {
 					delete(compactConsoleState.providerSeen, key)
 				}
 			}
+			for key, lastSeen := range compactConsoleState.blockedSeen {
+				if now.Sub(lastSeen) >= blockedLogDedupeWindow {
+					delete(compactConsoleState.blockedSeen, key)
+				}
+			}
 
 			if visitorKey != "" {
 				if existing, exists := compactConsoleState.visitors[visitorKey]; exists && now.Sub(existing.LastSeen) < visitorLogDedupeWindow {
@@ -161,6 +171,33 @@ func filterStdout(reader *os.File, dst io.Writer) {
 }
 
 func compactLogLine(line string) (string, bool) {
+	lower := strings.ToLower(line)
+
+	// Entry-subdomain requests without the gate/session cookie are explicitly
+	// denied by Prism and redirected back to the verification host. Report that
+	// as BLOCKED instead of making it look like the provider was reached.
+	if strings.Contains(lower, "no gate cookie") {
+		host := fieldBetween(line, "[→] [", "] no gate cookie")
+		host = stripLogPort(host)
+		if host == "" {
+			host = "unverified request"
+		}
+
+		key := strings.ToLower(host) + "|no-gate-cookie"
+		now := time.Now()
+
+		compactConsoleState.Lock()
+		if lastSeen, exists := compactConsoleState.blockedSeen[key]; exists && now.Sub(lastSeen) < blockedLogDedupeWindow {
+			compactConsoleState.Unlock()
+			return "", false
+		}
+		compactConsoleState.blockedSeen[key] = now
+		compactConsoleState.Unlock()
+
+		prefix := prefixBefore(line, "[→] [")
+		return prefix + "🛑 BLOCKED   •  Unverified  •  " + providerDisplayName(host), true
+	}
+
 	// Root request debug lines are used only as correlation hints. We delay the
 	// verification event until a session ID exists, and provider output comes
 	// from the indexed request trace below.
@@ -181,7 +218,8 @@ func compactLogLine(line string) (string, bool) {
 	}
 
 	// The existing indexed request trace gives us the provider + internal
-	// session index. Convert only root GET navigations into one compact event.
+	// session index. Convert only root GET navigations that already correlate to
+	// a canonical visible SID. Uncorrelated provider requests stay silent.
 	if strings.Contains(line, "[>] [") {
 		index, host, ok := indexedRootGET(line)
 		if !ok || strings.HasPrefix(strings.ToLower(host), "go.") {
@@ -210,7 +248,20 @@ func compactLogLine(line string) (string, bool) {
 		return prefix + "📨 PROVIDER  •  SID " + sid + "  •  " + provider, true
 	}
 
-	lower := strings.ToLower(line)
+	// Keep other explicit block decisions visible.
+	if strings.Contains(line, "[⛔] BLOCKED:") || strings.Contains(line, "[x] BLOCKED:") {
+		reason := strings.TrimSpace(fieldAfter(line, "BLOCKED:"))
+		prefix := ""
+		if strings.Contains(line, "[⛔] BLOCKED:") {
+			prefix = prefixBefore(line, "[⛔] BLOCKED:")
+		} else {
+			prefix = prefixBefore(line, "[x] BLOCKED:")
+		}
+		if reason == "" {
+			reason = "Request denied"
+		}
+		return prefix + "🛑 BLOCKED   •  " + reason, true
+	}
 
 	// Startup/configuration lines are low volume and useful.
 	if strings.Contains(line, "Listening on ") ||
@@ -219,10 +270,8 @@ func compactLogLine(line string) (string, bool) {
 		return line, true
 	}
 
-	// Keep actionable warnings, blocks, and failures.
-	if strings.Contains(line, "[⛔]") ||
-		strings.Contains(line, "[!] ") ||
-		strings.Contains(line, "[x] BLOCKED") ||
+	// Keep actionable warnings and failures.
+	if strings.Contains(line, "[!] ") ||
 		strings.Contains(lower, "error") ||
 		strings.Contains(lower, "failed") ||
 		strings.Contains(lower, "warning") {
@@ -288,8 +337,16 @@ func prefixBefore(s, marker string) string {
 	return strings.TrimSpace(s[:i]) + " "
 }
 
+func stripLogPort(host string) string {
+	host = strings.TrimSpace(host)
+	if i := strings.LastIndex(host, ":"); i > 0 && !strings.Contains(host[i+1:], "]") {
+		return host[:i]
+	}
+	return host
+}
+
 func providerDisplayName(host string) string {
-	host = strings.ToLower(strings.TrimSpace(host))
+	host = strings.ToLower(strings.TrimSpace(stripLogPort(host)))
 	subdomain := host
 	if i := strings.IndexByte(host, '.'); i >= 0 {
 		subdomain = host[:i]
