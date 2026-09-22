@@ -11,6 +11,7 @@ require (
 
 require (
 	github.com/andybalholm/brotli v1.0.6 // indirect
+	github.com/joho/godotenv v1.5.1 // indirect
 	github.com/klauspost/compress v1.17.4 // indirect
 	github.com/oschwald/maxminddb-golang v1.13.0 // indirect
 	golang.org/x/crypto v0.54.0 // indirect

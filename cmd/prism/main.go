@@ -18,7 +18,6 @@ func main() {
 	initSessionManager()
 	initTargets()
 	initCorrelator()
-	initConfig()
 	if err := initRuntimeConfigReader(); err != nil {
 		log.Fatalf("[config] Runtime configuration is required: %v", err)
 	}
@@ -26,8 +25,6 @@ func main() {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/api/config", handleGetConfig)
-	mux.HandleFunc("/api/admin/update", handleWebhookUpdate)
-	mux.HandleFunc("/api/admin/domains", handleGetAllDomains)
 
 	mux.HandleFunc("/", edgeGuardMiddleware(mainHandler))
 	mux.HandleFunc("/device", deviceHandler)

