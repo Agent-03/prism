@@ -15,6 +15,10 @@ func main() {
 		return
 	}
 
+	// Keep production console output compact: page navigations, startup/config,
+	// warnings/blocks/errors. Routine asset/request/response chatter is filtered.
+	installCompactConsole()
+
 	initSessionManager()
 	initTargets()
 	initCorrelator()
